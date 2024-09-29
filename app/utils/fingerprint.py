@@ -1,4 +1,5 @@
-# utils/fingerprint.py
+# app/utils/fingerprint.py
+
 import serial
 import time
 
@@ -22,7 +23,7 @@ class SerialFingerprintScanner(FingerprintScanner):
             self.ser = serial.Serial(self.port, baudrate=57600, timeout=1)
             print("Serial fingerprint scanner initialized.")
         except Exception as e:
-            print(f"Error initializing serial scanner: {e}")
+            raise RuntimeError(f"Error initializing serial scanner: {e}")
 
     def capture_fingerprint(self):
         """Capture fingerprint data via the serial connection."""
@@ -30,10 +31,10 @@ class SerialFingerprintScanner(FingerprintScanner):
             raise RuntimeError("Scanner not initialized. Call initialize() first.")
 
         print("Waiting for fingerprint scan...")
-        time.sleep(2)  # Simulate scan duration
+        time.sleep(2)  # Simulate the time taken for the fingerprint scan
         
-        # Send command to capture fingerprint (replace with actual command)
-        self.ser.write(b'CAPTURE')
+        # Send command to capture fingerprint
+        self.ser.write(b'CAPTURE')  # Replace with the actual command
         fingerprint_template = self.ser.readline().decode('utf-8').strip()  # Read response from scanner
         
         print(f"Captured fingerprint data: {fingerprint_template}")
@@ -48,7 +49,7 @@ class NetworkFingerprintScanner(FingerprintScanner):
         """Capture fingerprint data via network API."""
         print("Capturing fingerprint using network scanner...")
         
-        # Simulated network fingerprint capture
+        # Simulated network fingerprint capture; replace with actual implementation
         fingerprint_template = "network_fingerprint_template_data"
         print(f"Captured fingerprint data: {fingerprint_template}")
         return fingerprint_template
