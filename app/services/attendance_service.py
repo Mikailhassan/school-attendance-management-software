@@ -1,74 +1,86 @@
-# services/attendance_service.py
-from app.models import Attendance, User
-from app.database import SessionLocal
-from fastapi import HTTPException
+from fastapi import HTTPException, Depends
+from sqlalchemy.orm import Session
 from datetime import datetime
+from typing import List
+
+from app.models import Attendance, User
+from app.database import get_db
 from .fingerprint_service import FingerprintService
 
-async def mark_attendance(user_id: int, check_type: str, scanner_type: str):
-    db = SessionLocal()
-    
-    # Check if the user exists
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+class AttendanceService:
+    def __init__(self, db: Session = Depends(get_db)):
+        self.db = db
 
-    # Initialize the fingerprint service
-    fingerprint_service = FingerprintService(scanner_type)
-    
-    # Capture the fingerprint
-    fingerprint_template = fingerprint_service.capture_fingerprint()
+    async def mark_attendance(self, user_id: int, check_type: str, scanner_type: str):
+        user = self._get_user(user_id)
+        fingerprint_service = FingerprintService(scanner_type)
+        fingerprint_template = fingerprint_service.capture_fingerprint()
 
-    # Create or update attendance record
-    attendance_record = db.query(Attendance).filter(Attendance.user_id == user_id).order_by(Attendance.id.desc()).first()
+        if check_type == "check_in":
+            self._handle_check_in(user_id, fingerprint_template)
+        elif check_type == "check_out":
+            self._handle_check_out(user_id)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid check type")
 
-    if check_type == "check_in":
-        if attendance_record and attendance_record.check_out_time is None:  # Already checked in
+        self.db.commit()
+        return {"message": "Attendance marked successfully"}
+
+    def _get_user(self, user_id: int) -> User:
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user
+
+    def _handle_check_in(self, user_id: int, fingerprint_template: str):
+        latest_record = self._get_latest_attendance_record(user_id)
+        if latest_record and latest_record.check_out_time is None:
             raise HTTPException(status_code=400, detail="User already checked in")
-        
-        # Create new attendance record for check-in
+
         new_attendance = Attendance(
             user_id=user_id,
             check_in_time=datetime.utcnow(),
             fingerprint_template=fingerprint_template,
             is_present=True
         )
-        db.add(new_attendance)
+        self.db.add(new_attendance)
 
-    elif check_type == "check_out":
-        if not attendance_record or attendance_record.check_out_time is not None:  # Not checked in or already checked out
+    def _handle_check_out(self, user_id: int):
+        latest_record = self._get_latest_attendance_record(user_id)
+        if not latest_record or latest_record.check_out_time is not None:
             raise HTTPException(status_code=400, detail="User has not checked in or already checked out")
+        latest_record.check_out_time = datetime.utcnow()
 
-        # Update the existing record with check-out time
-        attendance_record.check_out_time = datetime.utcnow()
+    def _get_latest_attendance_record(self, user_id: int) -> Attendance:
+        return self.db.query(Attendance).filter(Attendance.user_id == user_id).order_by(Attendance.id.desc()).first()
 
-    db.commit()
-    return {"message": "Attendance marked successfully"}
+    async def view_attendance_by_date(self, date: str) -> dict:
+        date_obj = datetime.strptime(date, '%Y-%m-%d').date()
+        attendance_records = self._get_attendance_records_for_date(date_obj)
 
-async def view_attendance_by_date(date: str):
-    db = SessionLocal()
-    
-    # Convert string date to a datetime object
-    date_obj = datetime.strptime(date, '%Y-%m-%d').date()
+        if not attendance_records:
+            raise HTTPException(status_code=404, detail="No attendance records found for this date")
 
-    # Retrieve attendance records for the specified date
-    attendance_records = db.query(Attendance).filter(
-        Attendance.check_in_time >= datetime.combine(date_obj, datetime.min.time()),
-        Attendance.check_in_time < datetime.combine(date_obj, datetime.max.time())
-    ).all()
+        formatted_records = self._format_attendance_records(attendance_records)
+        return {"date": date, "attendance_records": formatted_records}
 
-    if not attendance_records:
-        raise HTTPException(status_code=404, detail="No attendance records found for this date")
+    def _get_attendance_records_for_date(self, date_obj: datetime.date) -> List[Attendance]:
+        return self.db.query(Attendance).filter(
+            Attendance.check_in_time >= datetime.combine(date_obj, datetime.min.time()),
+            Attendance.check_in_time < datetime.combine(date_obj, datetime.max.time())
+        ).all()
 
-    # Format records for return
-    formatted_records = []
-    for record in attendance_records:
-        formatted_records.append({
-            "user_id": record.user_id,
-            "check_in_time": record.check_in_time,
-            "check_out_time": record.check_out_time,
-            "is_present": record.is_present,
-            "fingerprint_template": record.fingerprint_template  # Include fingerprint if needed
-        })
+    def _format_attendance_records(self, records: List[Attendance]) -> List[dict]:
+        return [
+            {
+                "user_id": record.user_id,
+                "check_in_time": record.check_in_time,
+                "check_out_time": record.check_out_time,
+                "is_present": record.is_present,
+                "fingerprint_template": record.fingerprint_template
+            }
+            for record in records
+        ]
 
-    return {"date": date, "attendance_records": formatted_records}
+
+
