@@ -13,9 +13,7 @@ Download and install the client for windows here: [HID DigitalPersona Client](ht
 
 The project is divided into three sections:
 
-1. `client` (frontend)
-2. `server` (core backend)
-3. `server-py` (matching backend)
+
 
 ## Getting Started
 
@@ -24,79 +22,10 @@ Follow the steps below to set up the project locally
 1.  Clone repo:
 
   ```bash
-  [HTTPS] - git clone git@github.com:IamGideonIdoko/bio-attendance-sys.git
-  [SSH] - git clone https://github.com/IamGideonIdoko/bio-attendance-sys.git
+  [HTTPS] - git clone https://github.com/Mikailhassan/school-attendnce-management-software.git
+  [SSH] - git clone git@github.com:Mikailhassan/school-attendnce-management-software.git
   ```
 
-2. Install `client` dependencies:
-
-  ```bash
-  make client-deps
-  ```
-
-3. Install `server` dependencies:
-
-  ```bash
-  make server-deps
-  ```
-
-4. Install `server-py` dependencies
-
-    i. Create a conda environment
-
-     ```bash
-     make conda-env
-     ```
-
-    ii. Activate created conda environment
-
-     ```bash
-     conda activate bas_env
-     ```
-
-    iii. Install dependencies
-
-     ```bash
-     make match-server-deps
-     ```
-
-5. Create a MySQL database (eg. `bioattendancesysdb`)
-
-6. Set up `.env` in `server` and update with neccessary details
-
-  ```bash
-  make core-server-env
-  ```
-
-7. Run DB migration
-
-  ```bash
-  make dev-migrate
-  ```
-
-8. Run DB migration
-
-  ```bash
-  make dev-migrate
-  ```
-
-9. In a new terminal, start `server`
-
-  ```bash
-  make core-server
-  ```
-
-10. In a conda activated `bas_env` environment terminal, start `server-py`
-
-  ```bash
-  make match-server
-  ```
-
-11. In a new terminal, start `client`
-
-  ```bash
-  make client-server
-  ```
 
 ## Project DB ERD
 ![Entity Relationship Diagram](./server/prisma/diagrams/ERD-auto.svg)
