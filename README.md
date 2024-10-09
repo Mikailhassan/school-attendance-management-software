@@ -1,66 +1,60 @@
-# Biometric Attendance System
+Biometric Attendance System
+This Biometric Attendance System is a time and attendance tracking system designed to help staff or teachers organize courses, manage students, and track attendance using the most unique physical identifier—fingerprints. It leverages computer vision (Python OpenCV), Flask, and the MERN stack to ensure accurate, efficient, and secure attendance management.
 
-This biometric attendance system is a time and attendance tracking system that allows staff or teachers to organize courses, manage students and mark students' attendance using their most unique physical characteristics—their fingerprints. It's built with computer vision (Python OpenCV), Flask and the MERN stack.
+Note: The system has been developed and tested specifically with the DigitalPersona U.are.U 4500 fingerprint scanner and is currently supported on Windows OS only.
 
-**NB**: This system has been built and tested with The DigitalPersona U.are.U 4500 scanner only. It only supports Windows OS for now.
+Hardware Supported
+Below is an image of the DigitalPersona U.are.U 4500 fingerprint scanner:
 
-Below is an image of a DigitalPersona U.are.U 4500 scanner
-![DigitalPersona U.are.U 4500 scanner](./screenshots/digitalpersona_scanner_full.jpg)
+You can download and install the required client for Windows here: HID DigitalPersona Client
 
-Download and install the client for windows here: [HID DigitalPersona Client](https://drive.google.com/file/d/12QCh311WQ-_PIkMHeXqNRfTkbIWnnSdY/view?usp=sharing)
+Project Structure
+The project is structured into three core sections for smooth functionality:
 
-## Project Structure
+Frontend (React): Handles the user interface and client-side logic.
+Backend (Flask): Manages business logic, API requests, and database communication.
+Biometric Integration (Python OpenCV): Incorporates the biometric hardware for fingerprint scanning and verification.
+Getting Started
+To get the project up and running locally, follow the steps below:
 
-The project is divided into three sections:
+Clone the repository:
+bash
+Copy code
+# Using HTTPS
+git clone https://github.com/Mikailhassan/school-attendnce-management-software.git
 
-
-
-## Getting Started
-
-Follow the steps below to set up the project locally
-
-1.  Clone repo:
-
-  ```bash
-  [HTTPS] - git clone https://github.com/Mikailhassan/school-attendnce-management-software.git
-  [SSH] - git clone git@github.com:Mikailhassan/school-attendnce-management-software.git
-  ```
-
-
-## Project DB ERD
-![Entity Relationship Diagram](./server/prisma/diagrams/ERD-auto.svg)
-
-## Screenshots
-![Screenshot of system 1](./screenshots/bas_screenshot_1.JPG)
-
-![Screenshot of system 2](./screenshots/bas_screenshot_2.JPG)
-
-![Screenshot of system 3](./screenshots/bas_screenshot_3.JPG)
-
-![Screenshot of system 4](./screenshots/bas_screenshot_4.JPG)
-
-![Screenshot of system 5](./screenshots/bas_screenshot_5.jpg)
-
-![Screenshot of system 6](./screenshots/bas_screenshot_6.JPG)
-
-![Screenshot of system 7](./screenshots/bas_screenshot_7.JPG)
-
-## Contributing
-
-Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
-
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
-Don't forget to give the project a star! Thanks again!
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## License
-
-Distributed under the MIT License. See `LICENSE` for more information.
+# Using SSH
+git clone git@github.com:Mikailhassan/school-attendnce-management-software.git
+Install dependencies and set up the project:
+Frontend: Navigate to the frontend folder and run:
+bash
+Copy code
+npm install
+npm start
+Backend: In the backend directory, create a virtual environment and install dependencies:
+bash
+Copy code
+python -m venv venv
+source venv/bin/activate  # For Linux/Mac
+venv\Scripts\activate  # For Windows
+pip install -r requirements.txt
+Database Structure
+The project uses a relational database system for managing attendance and student data. Below is the Entity Relationship Diagram (ERD) showcasing the database structure:
 
 
 
+Screenshots
+Here are some screenshots of the system in action:
+
+
+
+Contributing
+This project welcomes contributions to enhance its functionality and make it even better. Contributions are highly appreciated and help foster the open-source community.
+
+If you have suggestions or improvements, you can fork the repository and submit a pull request. You can also open an issue tagged with "enhancement".
+
+Contribution Steps:
+Fork the repository.
+Open a pull request.
+License
+This project is distributed under the MIT License. See the LICENSE file for more information.
