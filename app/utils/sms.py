@@ -6,7 +6,7 @@ import re
 class SMSConfig(BaseModel):
     TWILIO_ACCOUNT_SID: str = "your_account_sid"
     TWILIO_AUTH_TOKEN: str = "your_auth_token"
-    TWILIO_PHONE_NUMBER: str = "+1234567890"
+    TWILIO_PHONE_NUMBER: str = "+2544567890"
 
     class Config:
         env_file = ".env"
