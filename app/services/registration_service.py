@@ -4,7 +4,6 @@ from typing import Dict, Any
 
 from app.models import User, Fingerprint
 from app.database import get_db
-from app.utils.fingerprint import capture_fingerprint
 from app.services.auth_service import hash_password
 from app.services.fingerprint_service import FingerprintService
 
@@ -63,7 +62,10 @@ class RegistrationService:
         return User(**user_data)
 
     async def _create_fingerprint(self, user: User) -> Fingerprint:
+        """Capture fingerprint and create a Fingerprint record."""
         fingerprint_template = await self.fingerprint_service.capture_fingerprint()
+        if not fingerprint_template:
+            raise HTTPException(status_code=400, detail="Fingerprint capture failed")
         return Fingerprint(user=user, fingerprint_template=fingerprint_template)
 
     async def register_teacher(self, request: Dict[str, Any]) -> User:

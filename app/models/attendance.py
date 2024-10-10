@@ -1,4 +1,3 @@
-# models/attendance.py
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -13,8 +12,11 @@ class Attendance(Base):
     check_out_time = Column(DateTime, nullable=True)
     is_present = Column(Boolean, default=False)
     
-    # Relationships
     user = relationship("User", back_populates="attendances")
 
     def __repr__(self):
         return f"<Attendance(user_id={self.user_id}, present={self.is_present})>"
+
+    def validate_attendance(self):
+        if self.check_out_time and self.check_out_time < self.check_in_time:
+            raise ValueError("Check-out time must be after check-in time.")

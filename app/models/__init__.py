@@ -7,4 +7,5 @@ from .student import Student
 from .parent import Parent
 from .fingerprint import Fingerprint
 from .attendance import Attendance
+from .user import User, RevokedToken  
 

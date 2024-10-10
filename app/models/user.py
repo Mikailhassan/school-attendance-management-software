@@ -1,4 +1,3 @@
-# models/user.py
 from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Date
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -39,3 +38,9 @@ class User(Base):
 
     def __repr__(self):
         return f"<User(name={self.name}, role={self.role})>"
+
+class RevokedToken(Base):
+    __tablename__ = 'revoked_tokens'
+    
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, unique=True, index=True)

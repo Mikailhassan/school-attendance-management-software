@@ -1,76 +1,78 @@
-from fastapi import Depends, HTTPException
-from fastapi.security import OAuth2PasswordBearer
+from typing import List
+from fastapi import HTTPException, Depends
 from sqlalchemy.orm import Session
-from passlib.context import CryptContext
-from typing import Dict, Any
-
+from app.utils.fingerprint import get_fingerprint_scanner, FingerprintScanner
+from app.models import Fingerprint
 from app.database import get_db
-from app.models import User
 
-class AuthService:
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
+class FingerprintService:
     def __init__(self, db: Session = Depends(get_db)):
+        self.scanner: FingerprintScanner = get_fingerprint_scanner("libfprint")
+        self.scanner.initialize()  # Initialize the scanner
         self.db = db
 
-    def verify_password(self, plain_password: str, hashed_password: str) -> bool:
-        return self.pwd_context.verify(plain_password, hashed_password)
+    def capture_fingerprint(self) -> str:
+        """Capture a fingerprint using the libfprint scanner."""
+        try:
+            return self.scanner.capture_fingerprint()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to capture fingerprint: {str(e)}")
 
-    def hash_password(self, password: str) -> str:
-        return self.pwd_context.hash(password)
-
-    async def get_current_admin(self, token: str = Depends(oauth2_scheme)) -> User:
-        user = self.db.query(User).filter(User.token == token).first()
-        if not user or user.role != "admin":
-            raise HTTPException(status_code=403, detail="Not enough permissions")
-        return user
-
-    async def login_user(self, email: str, password: str) -> Dict[str, Any]:
-        user = self.db.query(User).filter(User.email == email).first()
-        if not user or not self.verify_password(password, user.password_hash):
-            raise HTTPException(status_code=400, detail="Invalid credentials")
+    def verify_fingerprint(self, fingerprint_template: str, user_id: int) -> dict:
+        """Verify the fingerprint template against stored records."""
+        stored_fingerprint = self._get_stored_fingerprint(user_id)
         
-        # TODO: Generate and store a new token for the user
-        # user.token = generate_token()
-        # self.db.commit()
+        if self._compare_fingerprints(fingerprint_template, stored_fingerprint.fingerprint_template):
+            return {"message": "Fingerprint verified successfully", "user_id": user_id}
+        else:
+            raise HTTPException(status_code=400, detail="Fingerprint verification failed")
 
-        return {"message": "Login successful", "user_id": user.id, "token": user.token}
+    def _get_stored_fingerprint(self, user_id: int) -> Fingerprint:
+        """Retrieve stored fingerprint for a user."""
+        stored_fingerprint = self.db.query(Fingerprint).filter(Fingerprint.user_id == user_id).first()
+        if not stored_fingerprint:
+            raise HTTPException(status_code=404, detail="User fingerprint not found")
+        return stored_fingerprint
 
-    async def logout_user(self, current_user: User) -> Dict[str, str]:
-        # TODO: Implement logout logic (e.g., invalidate the token)
-        # current_user.token = None
-        # self.db.commit()
-        return {"message": "Logout successful"}
+    def _compare_fingerprints(self, new_fingerprint: str, stored_fingerprint: str) -> bool:
+        """
+        Compare the new fingerprint with the stored fingerprint.
+        This uses a simple minutiae-based matching logic for demonstration.
+        """
+        new_features = self._extract_minutiae(new_fingerprint)
+        stored_features = self._extract_minutiae(stored_fingerprint)
 
-    async def register_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
-        if self._user_exists(user_data['email']):
-            raise HTTPException(status_code=400, detail="Email already registered")
+        matching_points = sum(1 for feature in new_features if feature in stored_features)
+        return matching_points >= self._get_matching_threshold()
 
-        new_user = User(
-            name=user_data['name'],
-            email=user_data['email'],
-            phone=user_data.get('phone'),
-            role=user_data['role'],
-            password_hash=self.hash_password(user_data['password'])
-        )
+    def _extract_minutiae(self, fingerprint: str) -> List[str]:
+        """
+        Simulated extraction of minutiae features from a fingerprint.
+        In reality, this would involve complex image processing and analysis.
+        """
+        # TODO: Implement actual minutiae extraction
+        return fingerprint.split()  # Placeholder implementation
 
-        self.db.add(new_user)
+    def _get_matching_threshold(self) -> int:
+        """
+        Get the threshold for the number of matching points required for verification.
+        This could be configurable or dynamically determined based on various factors.
+        """
+        # TODO: Implement logic to determine the appropriate threshold
+        return 3  # Placeholder value
+
+    def register_fingerprint(self, user_id: int) -> dict:
+        """Register a new fingerprint for a user."""
+        if self._user_has_fingerprint(user_id):
+            raise HTTPException(status_code=400, detail="User already has a registered fingerprint")
+
+        fingerprint_template = self.capture_fingerprint()
+        new_fingerprint = Fingerprint(user_id=user_id, fingerprint_template=fingerprint_template)
+        self.db.add(new_fingerprint)
         self.db.commit()
-        self.db.refresh(new_user)
 
-        return {"message": "User registered successfully", "user_id": new_user.id}
+        return {"message": "Fingerprint registered successfully", "user_id": user_id}
 
-    def _user_exists(self, email: str) -> bool:
-        return self.db.query(User).filter(User.email == email).first() is not None
-
-# Create global instances for convenience
-pwd_context = AuthService.pwd_context
-oauth2_scheme = AuthService.oauth2_scheme
-
-# Helper functions that can be imported directly
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    def _user_has_fingerprint(self, user_id: int) -> bool:
+        """Check if a user already has a registered fingerprint."""
+        return self.db.query(Fingerprint).filter(Fingerprint.user_id == user_id).first() is not None

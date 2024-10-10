@@ -4,6 +4,14 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
+sqlalchemy = "*"
+alembic = "*"
+pymysql = "*"
+mysqlclient = "*"
+passlib = "*"
+python-jose = {extras = ["cryptography"], version = "*"}
+python-multipart = "*"
+bcrypt = "*"
 
 [dev-packages]
 
