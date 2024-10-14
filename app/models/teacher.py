@@ -1,22 +1,25 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
-from app.database import Base
+from sqlalchemy.sql import func
+from .base import Base, TenantModel
 
-class Teacher(Base):
+class Teacher(Base, TenantModel):
     __tablename__ = "teachers"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
     name = Column(String, nullable=False)
     gender = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False)
     phone = Column(String, nullable=False)
     date_of_joining = Column(Date, nullable=False)
     date_of_birth = Column(Date, nullable=False)
-    tsc_number = Column(String, nullable=False, unique=True)  # Added unique constraint
+    tsc_number = Column(String, nullable=False, unique=True)
     address = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
-    school = relationship("School", back_populates="teachers")
+    user = relationship("User", back_populates="teacher_profile")
 
     def __repr__(self):
         return f"<Teacher(name={self.name}, tsc_number={self.tsc_number})>"

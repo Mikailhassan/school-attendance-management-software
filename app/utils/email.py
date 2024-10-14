@@ -9,15 +9,23 @@ class EmailConfig(BaseModel):
     MAIL_FROM: str
     MAIL_PORT: int
     MAIL_SERVER: str
-    MAIL_TLS: bool
-    MAIL_SSL: bool
+    MAIL_STARTTLS: bool
+    MAIL_SSL_TLS: bool
 
     class Config:
         env_file = ".env"
 
 @lru_cache()
 def get_email_config() -> EmailConfig:
-    return EmailConfig()
+    return EmailConfig(
+        MAIL_USERNAME="mikailismail260@gmail.com",
+        MAIL_PASSWORD="cbfhfrhfr89ff",
+        MAIL_FROM="mikailismail260@gmail.com",
+        MAIL_PORT=587,
+        MAIL_SERVER="smtp.gmail.com",
+        MAIL_STARTTLS=True,
+        MAIL_SSL_TLS=False
+    )
 
 def get_connection_config(email_config: EmailConfig = get_email_config()) -> ConnectionConfig:
     return ConnectionConfig(
@@ -26,8 +34,8 @@ def get_connection_config(email_config: EmailConfig = get_email_config()) -> Con
         MAIL_FROM=email_config.MAIL_FROM,
         MAIL_PORT=email_config.MAIL_PORT,
         MAIL_SERVER=email_config.MAIL_SERVER,
-        MAIL_TLS=email_config.MAIL_TLS,
-        MAIL_SSL=email_config.MAIL_SSL,
+        MAIL_STARTTLS=email_config.MAIL_STARTTLS,
+        MAIL_SSL_TLS=email_config.MAIL_SSL_TLS,
         USE_CREDENTIALS=True,
         VALIDATE_CERTS=True
     )
@@ -56,10 +64,13 @@ async def send_email(
     except Exception as e:
         print(f"Failed to send email: {str(e)}")
 
+# Send a welcome email
+async def send_welcome_email(user_email: EmailStr):
+    await send_email(
+        recipients=[user_email],
+        subject="Welcome to Our School System",
+        body="<h1>Welcome!</h1><p>Thank you for joining our school system.</p>"
+    )
+
 # Example usage
-# async def send_welcome_email(user_email: EmailStr):
-#     await send_email(
-#         recipients=[user_email],
-#         subject="Welcome to Our School System",
-#         body="<h1>Welcome!</h1><p>Thank you for joining our school system.</p>"
-#     )
+# await send_welcome_email("mikailismail260@gmail.com")

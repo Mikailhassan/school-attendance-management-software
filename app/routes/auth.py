@@ -1,36 +1,244 @@
-from fastapi import APIRouter, Depends, HTTPException
-from app.services.auth_service import AuthService  # Import the AuthService class
-from app.schemas import LoginRequest, RegisterRequest
-from app.dependencies import get_current_user
-from app.models import User  # Ensure the User model is imported
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+from datetime import date, timedelta, datetime
 
-router = APIRouter()
-auth_service = AuthService()  # Create an instance of AuthService
+from app.services.auth_service import AuthService
+from app.services.attendance_service import AttendanceService
+from app.dependencies import get_current_user, get_db
+from app.schemas import UserCreate, UserResponse, AttendanceAnalytics
+from app.models.user import User
 
-@router.post("/login")
-async def login(request: LoginRequest):
-    """
-    Log in a user and return an authentication token.
-    """
-    token = await auth_service.login_user(request.email, request.password)
-    if not token:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return {"token": token}
+router = APIRouter(tags=["authentication"])
 
-@router.post("/register")
-async def register(request: RegisterRequest):
-    """
-    Register a new user in the system.
-    """
-    new_user = await auth_service.register_user(request.dict())  # Ensure you pass the required user data
-    if not new_user:
-        raise HTTPException(status_code=400, detail="User registration failed")
-    return {"message": "User registered successfully", "user": new_user}
+attendance_service = AttendanceService()
 
-@router.post("/logout")
-async def logout(current_user: User = Depends(get_current_user)):
-    """
-    Log out the current user and invalidate their session.
-    """
-    await auth_service.logout_user(current_user)
-    return {"message": "Logout successful"}
+@router.post("/token")
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    auth_service = AuthService(db)
+    user = auth_service.authenticate_user(form_data.username, form_data.password)
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token = auth_service.create_access_token(
+        data={"sub": str(user.id)}
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+@router.post("/register", response_model=UserResponse)
+async def register(
+    user_data: UserCreate,
+    db: Session = Depends(get_db)
+):
+    auth_service = AuthService(db)
+    existing_user = db.query(User).filter(User.username == user_data.username).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already registered"
+        )
+    
+    hashed_password = auth_service.hash_password(user_data.password)
+    user = User(
+        username=user_data.username,
+        email=user_data.email,
+        hashed_password=hashed_password,
+        full_name=user_data.full_name,
+        role=user_data.role
+    )
+    
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    return user
+
+@router.post("/register-fingerprint")
+async def register_fingerprint(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    auth_service = AuthService(db)
+    result = auth_service.register_fingerprint(current_user.id)
+    return result
+
+@router.post("/verify-fingerprint")
+async def verify_fingerprint(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    auth_service = AuthService(db)
+    fingerprint_verified = auth_service.authenticate_with_fingerprint(current_user.id)
+    
+    if not fingerprint_verified:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Fingerprint verification failed"
+        )
+    
+    access_token = auth_service.create_access_token(
+        data={"sub": str(current_user.id)}
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+@router.get("/me", response_model=UserResponse)
+async def read_users_me(
+    current_user: User = Depends(get_current_user)
+):
+    return current_user
+
+# Route to get student profile with attendance summary
+@router.get("/profile/student/{student_id}", response_model=UserResponse)
+async def get_student_profile(
+    student_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    student = db.query(User).filter(User.id == student_id, User.role == 'student').first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    attendance_summary = await attendance_service.get_student_attendance_summary(student_id)
+
+    return {
+        "student_info": student,
+        "attendance_summary": attendance_summary
+    }
+
+# Route to get teacher profile with weekly attendance analysis
+@router.get("/profile/teacher/{teacher_id}/weekly", response_model=AttendanceAnalytics)
+async def get_teacher_weekly_profile(
+    teacher_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    teacher = db.query(User).filter(User.id == teacher_id, User.role == 'teacher').first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    
+    today = date.today()
+    start_of_week = today - timedelta(days=today.weekday())
+    end_of_week = start_of_week + timedelta(days=4)
+    
+    weekly_analysis = await attendance_service.get_teacher_attendance_analysis(
+        teacher_id, start_of_week, end_of_week
+    )
+    
+    return {
+        "teacher_info": teacher,
+        "weekly_analysis": weekly_analysis
+    }
+
+# NEW: Monthly attendance analysis for teachers
+@router.get("/profile/teacher/{teacher_id}/monthly", response_model=AttendanceAnalytics)
+async def get_teacher_monthly_profile(
+    teacher_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    teacher = db.query(User).filter(User.id == teacher_id, User.role == 'teacher').first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    
+    today = date.today()
+    start_of_month = today.replace(day=1)
+    end_of_month = (today.replace(month=today.month % 12 + 1, day=1) - timedelta(days=1))
+
+    monthly_analysis = await attendance_service.get_teacher_attendance_analysis(
+        teacher_id, start_of_month, end_of_month
+    )
+    
+    return {
+        "teacher_info": teacher,
+        "monthly_analysis": monthly_analysis
+    }
+
+# NEW: Term attendance analysis for teachers
+@router.get("/profile/teacher/{teacher_id}/term", response_model=AttendanceAnalytics)
+async def get_teacher_term_profile(
+    teacher_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    teacher = db.query(User).filter(User.id == teacher_id, User.role == 'teacher').first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    
+    # Assuming term starts on 1st January and ends on 30th June for example
+    term_start = date(today.year, 1, 1)
+    term_end = date(today.year, 6, 30)
+
+    term_analysis = await attendance_service.get_teacher_attendance_analysis(
+        teacher_id, term_start, term_end
+    )
+    
+    return {
+        "teacher_info": teacher,
+        "term_analysis": term_analysis
+    }
+
+# Add similar routes for student attendance monthly and term analysis
+
+# NEW: Monthly attendance analysis for students
+@router.get("/profile/student/{student_id}/monthly", response_model=AttendanceAnalytics)
+async def get_student_monthly_profile(
+    student_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    student = db.query(User).filter(User.id == student_id, User.role == 'student').first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    today = date.today()
+    start_of_month = today.replace(day=1)
+    end_of_month = (today.replace(month=today.month % 12 + 1, day=1) - timedelta(days=1))
+
+    monthly_analysis = await attendance_service.get_student_attendance_summary(
+        student_id, start_of_month, end_of_month
+    )
+    
+    return {
+        "student_info": student,
+        "monthly_analysis": monthly_analysis
+    }
+
+# NEW: Term attendance analysis for students
+@router.get("/profile/student/{student_id}/term", response_model=AttendanceAnalytics)
+async def get_student_term_profile(
+    student_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    student = db.query(User).filter(User.id == student_id, User.role == 'student').first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Assuming term starts on 1st January and ends on 30th June for example
+    term_start = date(today.year, 1, 1)
+    term_end = date(today.year, 6, 30)
+
+    term_analysis = await attendance_service.get_student_attendance_summary(
+        student_id, term_start, term_end
+    )
+    
+    return {
+        "student_info": student,
+        "term_analysis": term_analysis
+    }

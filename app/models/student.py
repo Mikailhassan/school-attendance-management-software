@@ -1,25 +1,28 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, Integer, String, Date, ForeignKey, DateTime
+from sqlalchemy.orm import relationship as orm_relationship
+from sqlalchemy.sql import func
 from app.database import Base
+from .base import TenantModel
 
-class Student(Base):
+class Student(Base, TenantModel):
     __tablename__ = "students"
 
     id = Column(Integer, primary_key=True, index=True)
-    admission_number = Column(String, unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
+    parent_id = Column(Integer, ForeignKey('parents.id'))
     name = Column(String, nullable=False)
-    gender = Column(String, nullable=False)
-    class_name = Column(String, nullable=False)
-    stream = Column(String, nullable=True)
-    date_of_joining = Column(Date, nullable=False)
     date_of_birth = Column(Date, nullable=False)
-    address = Column(String, nullable=True)
+    admission_number = Column(String, unique=True, nullable=False)
+    form = Column(String, nullable=False)
+    stream_id = Column(Integer, ForeignKey('streams.id'))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    parent_id = Column(Integer, ForeignKey("parents.id"), nullable=False)
-    parent = relationship("Parent", back_populates="children")
-
-    school_id = Column(Integer, ForeignKey("schools.id"), nullable=False)
-    school = relationship("School", back_populates="students")
+    school = orm_relationship("School", back_populates="students")
+    stream = orm_relationship("Stream", back_populates="students")
+    attendance_records = orm_relationship("Attendance", back_populates="user")
+    user = orm_relationship("User", back_populates="student_profile")
+    parent = orm_relationship("Parent", back_populates="students")
 
     def __repr__(self):
-        return f"<Student(name={self.name}, admission_number={self.admission_number})>"
+        return f"<Student(name={self.name}, admission_number={self.admission_number}, form={self.form}, stream={self.stream.name})>"

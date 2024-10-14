@@ -1,78 +1,100 @@
-from typing import List
-from fastapi import HTTPException, Depends
+from datetime import datetime, timedelta
+from typing import Optional
+from fastapi import HTTPException, Depends, status
 from sqlalchemy.orm import Session
-from app.utils.fingerprint import get_fingerprint_scanner, FingerprintScanner
-from app.models import Fingerprint
+from jose import JWTError, jwt
+from app.services.fingerprint_service import FingerprintService
+from app.models import Fingerprint, User
 from app.database import get_db
+from passlib.context import CryptContext
 
-class FingerprintService:
+# JWT Configuration
+SECRET_KEY = "your-secret-key-here"  # Change this to a secure secret key
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Create a password context for hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+class AuthService:
     def __init__(self, db: Session = Depends(get_db)):
-        self.scanner: FingerprintScanner = get_fingerprint_scanner("libfprint")
-        self.scanner.initialize()  # Initialize the scanner
         self.db = db
+        self.fingerprint_service = FingerprintService(db)
+
+    def hash_password(self, password: str) -> str:
+        """Hash a password."""
+        return pwd_context.hash(password)
+
+    def verify_password(self, plain_password: str, hashed_password: str) -> bool:
+        """Verify a password against the hashed password."""
+        return pwd_context.verify(plain_password, hashed_password)
+
+    def create_access_token(self, data: dict, expires_delta: Optional[timedelta] = None) -> str:
+        """Create a new JWT access token."""
+        to_encode = data.copy()
+        if expires_delta:
+            expire = datetime.utcnow() + expires_delta
+        else:
+            expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        
+        to_encode.update({"exp": expire})
+        encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+        return encoded_jwt
+
+    def verify_token(self, token: str) -> Optional[User]:
+        """Verify a JWT token and return the user."""
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            user_id: str = payload.get("sub")
+            if user_id is None:
+                return None
+            
+            user = self.db.query(User).filter(User.id == int(user_id)).first()
+            return user
+        except JWTError:
+            return None
+
+    def authenticate_user(self, username: str, password: str) -> Optional[User]:
+        """Authenticate a user with username and password."""
+        user = self.db.query(User).filter(User.username == username).first()
+        if not user:
+            return None
+        if not self.verify_password(password, user.hashed_password):
+            return None
+        return user
 
     def capture_fingerprint(self) -> str:
-        """Capture a fingerprint using the libfprint scanner."""
+        """Capture a fingerprint using the fingerprint service."""
+        return self.fingerprint_service.capture_fingerprint()
+
+    def verify_fingerprint(self, user_id: int) -> dict:
+        """Verify the captured fingerprint with the stored template."""
         try:
-            return self.scanner.capture_fingerprint()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to capture fingerprint: {str(e)}")
-
-    def verify_fingerprint(self, fingerprint_template: str, user_id: int) -> dict:
-        """Verify the fingerprint template against stored records."""
-        stored_fingerprint = self._get_stored_fingerprint(user_id)
-        
-        if self._compare_fingerprints(fingerprint_template, stored_fingerprint.fingerprint_template):
-            return {"message": "Fingerprint verified successfully", "user_id": user_id}
-        else:
-            raise HTTPException(status_code=400, detail="Fingerprint verification failed")
-
-    def _get_stored_fingerprint(self, user_id: int) -> Fingerprint:
-        """Retrieve stored fingerprint for a user."""
-        stored_fingerprint = self.db.query(Fingerprint).filter(Fingerprint.user_id == user_id).first()
-        if not stored_fingerprint:
-            raise HTTPException(status_code=404, detail="User fingerprint not found")
-        return stored_fingerprint
-
-    def _compare_fingerprints(self, new_fingerprint: str, stored_fingerprint: str) -> bool:
-        """
-        Compare the new fingerprint with the stored fingerprint.
-        This uses a simple minutiae-based matching logic for demonstration.
-        """
-        new_features = self._extract_minutiae(new_fingerprint)
-        stored_features = self._extract_minutiae(stored_fingerprint)
-
-        matching_points = sum(1 for feature in new_features if feature in stored_features)
-        return matching_points >= self._get_matching_threshold()
-
-    def _extract_minutiae(self, fingerprint: str) -> List[str]:
-        """
-        Simulated extraction of minutiae features from a fingerprint.
-        In reality, this would involve complex image processing and analysis.
-        """
-        # TODO: Implement actual minutiae extraction
-        return fingerprint.split()  # Placeholder implementation
-
-    def _get_matching_threshold(self) -> int:
-        """
-        Get the threshold for the number of matching points required for verification.
-        This could be configurable or dynamically determined based on various factors.
-        """
-        # TODO: Implement logic to determine the appropriate threshold
-        return 3  # Placeholder value
+            fingerprint_template = self.capture_fingerprint()
+            verification_result = self.fingerprint_service.verify_fingerprint(fingerprint_template, user_id)
+            return verification_result
+        except HTTPException as e:
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
 
     def register_fingerprint(self, user_id: int) -> dict:
-        """Register a new fingerprint for a user."""
-        if self._user_has_fingerprint(user_id):
-            raise HTTPException(status_code=400, detail="User already has a registered fingerprint")
+        """Register a new fingerprint for a user using the FingerprintService."""
+        try:
+            registration_result = self.fingerprint_service.register_fingerprint(user_id)
+            return registration_result
+        except HTTPException as e:
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
 
-        fingerprint_template = self.capture_fingerprint()
-        new_fingerprint = Fingerprint(user_id=user_id, fingerprint_template=fingerprint_template)
-        self.db.add(new_fingerprint)
-        self.db.commit()
-
-        return {"message": "Fingerprint registered successfully", "user_id": user_id}
-
-    def _user_has_fingerprint(self, user_id: int) -> bool:
-        """Check if a user already has a registered fingerprint."""
-        return self.db.query(Fingerprint).filter(Fingerprint.user_id == user_id).first() is not None
+    def authenticate_with_fingerprint(self, user_id: int) -> Optional[dict]:
+        """Authenticate a user with fingerprint and return access token."""
+        verification_result = self.verify_fingerprint(user_id)
+        if verification_result.get("success"):
+            user = self.db.query(User).filter(User.id == user_id).first()
+            if user:
+                access_token = self.create_access_token(
+                    data={"sub": str(user.id)}
+                )
+                return {
+                    "access_token": access_token,
+                    "token_type": "bearer"
+                }
+        return None

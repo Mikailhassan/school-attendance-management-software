@@ -8,10 +8,11 @@ sqlalchemy = "*"
 alembic = "*"
 pymysql = "*"
 mysqlclient = "*"
-passlib = "*"
-python-jose = {extras = ["cryptography"], version = "*"}
 python-multipart = "*"
 bcrypt = "*"
+fastapi = {extras = ["all"], version = "*"}
+python-jose = {extras = ["cryptography"], version = "*"}
+passlib = {extras = ["bcrypt"], version = "*"}
 
 [dev-packages]
 

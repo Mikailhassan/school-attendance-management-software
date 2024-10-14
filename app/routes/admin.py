@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.models import User, School, Attendance
-from app.schemas import SchoolCreate, UserCreate, AttendanceCreate
+from app.schemas import SchoolCreate, UserCreate, AttendanceCreate, School as SchoolResponse, UserResponse, Attendance as AttendanceResponse
 from app.database import SessionLocal
-from app.services.auth_service import get_current_admin
-from app.utils.email import send_email  # Assuming you have an email utility
-from app.utils.sms import send_sms      # Assuming you have an SMS utility
+from app.dependencies import get_current_admin
+from app.utils.email import send_email  
+from app.utils.sms import send_sms      
+from datetime import date
 
 router = APIRouter()
 
@@ -23,7 +24,7 @@ async def admin_dashboard(current_admin: User = Depends(get_current_admin)):
     return {"message": "Welcome to the Admin Dashboard!"}
 
 # Create a new school (Super Admin only)
-@router.post("/schools", response_model=School)
+@router.post("/schools", response_model=SchoolResponse)
 async def create_school(school: SchoolCreate, db: Session = Depends(get_db), current_admin: User = Depends(get_current_admin)):
     if current_admin.role != "super_admin":
         raise HTTPException(status_code=403, detail="Only super admins can create schools")
@@ -39,7 +40,7 @@ async def create_school(school: SchoolCreate, db: Session = Depends(get_db), cur
     return new_school
 
 # Create a new school admin (Under a specific school)
-@router.post("/schools/{school_id}/admins", response_model=User)
+@router.post("/schools/{school_id}/admins", response_model=UserResponse)
 async def create_school_admin(school_id: int, user: UserCreate, db: Session = Depends(get_db), current_admin: User = Depends(get_current_admin)):
     if current_admin.role != "super_admin":
         raise HTTPException(status_code=403, detail="Only super admins can create school admins")
@@ -60,12 +61,12 @@ async def create_school_admin(school_id: int, user: UserCreate, db: Session = De
     return new_admin
 
 # List all schools
-@router.get("/schools", response_model=list[School])
+@router.get("/schools", response_model=list[SchoolResponse])
 async def list_schools(db: Session = Depends(get_db), current_admin: User = Depends(get_current_admin)):
     return db.query(School).all()
 
 # List all users in the school
-@router.get("/schools/{school_id}/users", response_model=list[User])
+@router.get("/schools/{school_id}/users", response_model=list[UserResponse])
 async def list_users(school_id: int, db: Session = Depends(get_db), current_admin: User = Depends(get_current_admin)):
     if current_admin.role != "school_admin":
         raise HTTPException(status_code=403, detail="Only school admins can view users")
@@ -97,7 +98,7 @@ async def send_sms_to_parents(school_id: int, sms_data: dict, db: Session = Depe
     return {"message": "SMS sent successfully"}
 
 # Create attendance record (Assuming the schema exists)
-@router.post("/attendance", response_model=Attendance)
+@router.post("/attendance", response_model=AttendanceResponse)
 async def create_attendance(attendance_data: AttendanceCreate, db: Session = Depends(get_db), current_admin: User = Depends(get_current_admin)):
     # Assuming attendance_data includes student_id and school_id
     db_attendance = Attendance(**attendance_data.dict())
@@ -106,13 +107,33 @@ async def create_attendance(attendance_data: AttendanceCreate, db: Session = Dep
     db.refresh(db_attendance)
     return db_attendance
 
-# View attendance records for a specific school
-@router.get("/schools/{school_id}/attendance", response_model=list[Attendance])
-async def view_attendance(school_id: int, db: Session = Depends(get_db), current_admin: User = Depends(get_current_admin)):
+# View attendance records for a specific school (with date filtering)
+@router.get("/schools/{school_id}/attendance", response_model=list[AttendanceResponse])
+async def view_attendance(school_id: int, start_date: date = None, end_date: date = None, db: Session = Depends(get_db), current_admin: User = Depends(get_current_admin)):
     if current_admin.role != "school_admin":
         raise HTTPException(status_code=403, detail="Only school admins can view attendance")
     
-    return db.query(Attendance).filter(Attendance.school_id == school_id).all()
+    query = db.query(Attendance).filter(Attendance.school_id == school_id)
+    
+    if start_date and end_date:
+        query = query.filter(Attendance.date >= start_date, Attendance.date <= end_date)
+    
+    return query.all()
+
+# Calculate attendance percentage for a student
+@router.get("/schools/{school_id}/students/{student_id}/attendance-percentage")
+async def calculate_attendance_percentage(school_id: int, student_id: int, db: Session = Depends(get_db), current_admin: User = Depends(get_current_admin)):
+    if current_admin.role != "school_admin":
+        raise HTTPException(status_code=403, detail="Only school admins can view attendance")
+    
+    total_days = db.query(Attendance).filter(Attendance.school_id == school_id, Attendance.student_id == student_id).count()
+    present_days = db.query(Attendance).filter(Attendance.school_id == school_id, Attendance.student_id == student_id, Attendance.status == "Present").count()
+    
+    if total_days == 0:
+        raise HTTPException(status_code=404, detail="No attendance records found for this student.")
+    
+    attendance_percentage = (present_days / total_days) * 100
+    return {"attendance_percentage": attendance_percentage}
 
 # Delete a user
 @router.delete("/users/{user_id}", response_description="Delete a user")
@@ -124,9 +145,12 @@ async def delete_user(user_id: int, db: Session = Depends(get_db), current_admin
     db.commit()
     return {"message": "User deleted successfully"}
 
-# Delete a school
+# Delete a school by superadmin
 @router.delete("/schools/{school_id}", response_description="Delete a school")
 async def delete_school(school_id: int, db: Session = Depends(get_db), current_admin: User = Depends(get_current_admin)):
+    if current_admin.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Only super admins can delete schools")
+
     school = db.query(School).filter(School.id == school_id).first()
     if not school:
         raise HTTPException(status_code=404, detail="School not found")

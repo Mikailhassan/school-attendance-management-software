@@ -1,22 +1,27 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean
+from sqlalchemy import Column, Integer, ForeignKey, DateTime, Boolean, Date
 from sqlalchemy.orm import relationship
-from app.database import Base
 from datetime import datetime
+from .base import Base, TenantModel
 
-class Attendance(Base):
+class Attendance(Base, TenantModel):
     __tablename__ = "attendance"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    check_in_time = Column(DateTime, default=datetime.utcnow)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    date = Column(Date, nullable=False, default=datetime.utcnow().date)  # Attendance date
+    check_in_time = Column(DateTime, default=datetime.utcnow, nullable=True)
     check_out_time = Column(DateTime, nullable=True)
     is_present = Column(Boolean, default=False)
-    
+
     user = relationship("User", back_populates="attendances")
 
     def __repr__(self):
-        return f"<Attendance(user_id={self.user_id}, present={self.is_present})>"
+        return f"<Attendance(user_id={self.user_id}, date={self.date}, present={self.is_present}, school_id={self.school_id})>"
 
     def validate_attendance(self):
         if self.check_out_time and self.check_out_time < self.check_in_time:
             raise ValueError("Check-out time must be after check-in time.")
+        if not self.user_id:
+            raise ValueError("User ID must be provided.")
+        if not self.school_id:
+            raise ValueError("School ID must be provided.")

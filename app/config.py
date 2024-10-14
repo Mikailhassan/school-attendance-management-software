@@ -1,66 +1,96 @@
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, SecretStr, validator
-from typing import Optional, List
+from pydantic import Field, SecretStr, validator, EmailStr
+from typing import Optional, List, Dict
 from datetime import timedelta
 
 class Settings(BaseSettings):
     # Application Settings
     APP_NAME: str = "School Attendance Management System"
     VERSION: str = "1.0.0"
-    DEBUG: bool = False
+    DEBUG: bool = Field(default=False, env="DEBUG")
     
     # Database Settings
-    DATABASE_URL: str
+    DATABASE_URL: str = Field(..., env="DATABASE_URL")
     
     # Security Settings
-    SECRET_KEY: SecretStr
+    SECRET_KEY: SecretStr = Field(..., env="SECRET_KEY")
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
+    REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, env="REFRESH_TOKEN_EXPIRE_DAYS")
     
     # CORS Settings
-    ALLOWED_ORIGINS: List[str] = ["http://localhost:3000"]
+    ALLOWED_ORIGINS: List[str] = Field(default=["http://localhost:3000"], env="ALLOWED_ORIGINS")
     
     # File Upload Settings
-    UPLOAD_FOLDER: str = "uploads"
-    MAX_CONTENT_LENGTH: int = 16 * 1024 * 1024  # 16MB max file size
-    ALLOWED_EXTENSIONS: set = {'png', 'jpg', 'jpeg'}
+    UPLOAD_FOLDER: str = Field(default="uploads", env="UPLOAD_FOLDER")
+    MAX_CONTENT_LENGTH: int = Field(default=16 * 1024 * 1024, env="MAX_CONTENT_LENGTH")  # 16MB max file size
+    ALLOWED_EXTENSIONS: set = {'png', 'jpg', 'jpeg', 'gif'}
     
-    # Email Settings (if needed)
-    SMTP_SERVER: Optional[str] = None
-    SMTP_PORT: Optional[int] = None
-    SMTP_USERNAME: Optional[str] = None
-    SMTP_PASSWORD: Optional[str] = None
+    # Email Settings
+    SMTP_SERVER: Optional[str] = Field(default=None, env="SMTP_SERVER")
+    SMTP_PORT: Optional[int] = Field(default=None, env="SMTP_PORT")
+    SMTP_USERNAME: Optional[EmailStr] = Field(default=None, env="SMTP_USERNAME")
+    SMTP_PASSWORD: Optional[SecretStr] = Field(default=None, env="SMTP_PASSWORD")
     
     # Fingerprint Scanner Settings
-    SCANNER_TIMEOUT: int = 10  # seconds
-    SCANNER_QUALITY_THRESHOLD: int = 60  # minimum quality score
-    
+    SCANNER_TIMEOUT: int = Field(default=10, env="SCANNER_TIMEOUT")  # seconds
+    SCANNER_QUALITY_THRESHOLD: int = Field(default=60, env="SCANNER_QUALITY_THRESHOLD")  # minimum quality score
+
+    # Logging Configuration
+    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
+    LOG_FILE: Optional[str] = Field(default=None, env="LOG_FILE")
+
     @validator('ALLOWED_ORIGINS', pre=True)
     def parse_allowed_origins(cls, v):
         if isinstance(v, str):
-            return v.replace("'", '"')
+            return [origin.strip() for origin in v.split(",")]
         return v
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    @validator('ALLOWED_EXTENSIONS', pre=True)
+    def parse_allowed_extensions(cls, v):
+        if isinstance(v, str):
+            return set(ext.strip().lower() for ext in v.split(","))
+        return v
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=True
+    )
+
+    def get_email_config(self) -> Dict[str, Optional[str]]:
+        return {
+            "SMTP_SERVER": self.SMTP_SERVER,
+            "SMTP_PORT": self.SMTP_PORT,
+            "SMTP_USERNAME": self.SMTP_USERNAME.email if self.SMTP_USERNAME else None,
+            "SMTP_PASSWORD": self.SMTP_PASSWORD.get_secret_value() if self.SMTP_PASSWORD else None
+        }
 
 # Create settings instance
 settings = Settings()
 
 # Additional helper functions
 def get_token_expires_delta(minutes: Optional[int] = None) -> timedelta:
+    """Get token expiration timedelta."""
     if minutes is None:
         minutes = settings.ACCESS_TOKEN_EXPIRE_MINUTES
     return timedelta(minutes=minutes)
 
 def get_database_url() -> str:
-    """Get database URL with fallback options"""
+    """Get the database URL with fallback options."""
     return settings.DATABASE_URL
 
 def get_fingerprint_settings() -> dict:
-    """Get fingerprint scanner settings"""
+    """Get fingerprint scanner settings."""
     return {
         "timeout": settings.SCANNER_TIMEOUT,
         "quality_threshold": settings.SCANNER_QUALITY_THRESHOLD
     }
+
+def get_upload_folder() -> str:
+    """Get the upload folder path, creating it if it doesn't exist."""
+    folder = os.path.abspath(settings.UPLOAD_FOLDER)
+    os.makedirs(folder, exist_ok=True)
+    return folder
