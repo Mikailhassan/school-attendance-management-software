@@ -88,6 +88,11 @@ class TeacherBase(UserBase):
     class Config:
         from_attributes = True
 
+class Teacher(TeacherBase):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
 class TeacherCreate(TeacherBase):
     password: str
     school_id: int
@@ -136,6 +141,11 @@ class StudentUpdate(UserUpdate):
 class ParentBase(UserBase):
     pass
 
+class Parent(ParentBase):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
 class ParentCreate(ParentBase):
     password: str
 
@@ -165,7 +175,7 @@ class SchoolBase(BaseModel):
 class SchoolCreate(SchoolBase):
     pass
 
-class SchoolResponse(SchoolBase):
+class School(SchoolBase):
     id: int
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -211,13 +221,31 @@ class AttendanceBase(BaseModel):
 class AttendanceCreate(AttendanceBase):
     pass
 
-class AttendanceResponse(AttendanceBase):
+class Attendance(AttendanceBase):
     id: int
     created_at: datetime
     updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+
+# Attendance Request Model
+class AttendanceRequest(BaseModel):
+    user_id: int
+    school_id: int
+    check_in_time: datetime
+    check_out_time: Optional[datetime] = None
+
+# Attendance Response Models
+class WeeklyAttendanceResponse(BaseModel):
+    week_start_date: date
+    week_end_date: date
+    attendance_records: List[Attendance]
+
+class PeriodAttendanceResponse(BaseModel):
+    start_date: date
+    end_date: date
+    attendance_records: List[Attendance]
 
 # Fingerprint Models
 class FingerprintBase(BaseModel):
@@ -292,27 +320,3 @@ class StudentRegistrationRequest(BaseModel):
     stream: Optional[str] = None
     date_of_birth: Optional[date] = None
     school_id: int
-
-class AttendanceBase(BaseModel):
-    user_id: int
-    school_id: int
-    check_in_time: datetime
-    check_out_time: Optional[datetime] = None
-    is_present: bool = False
-
-    class Config:
-        from_attributes = True
-
-class AttendanceCreate(AttendanceBase):
-    pass
-
-class AttendanceResponse(AttendanceBase):
-    id: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-# You can also add an alias for consistency with your existing code
-Attendance = AttendanceResponse    

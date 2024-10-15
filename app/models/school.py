@@ -24,6 +24,7 @@ class School(Base):
     students = relationship("Student", back_populates="school", cascade="all, delete-orphan")
     teachers = relationship("Teacher", back_populates="school", cascade="all, delete-orphan")
     streams = relationship("Stream", back_populates="school", cascade="all, delete-orphan")  # New relationship to Stream
+    parents = relationship("Parent", back_populates="school", cascade="all, delete-orphan")  # relationship to Parent
 
     def __repr__(self):
         return f"<School(name={self.name}, email={self.email}, phone={self.phone})>"

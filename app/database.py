@@ -1,43 +1,58 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, scoped_session
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Query
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import Column, Integer, ForeignKey
+from sqlalchemy.orm import relationship, declared_attr
 from app.config import settings
-# from flask import g
 
 SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=True)
 
-class SchoolTenantQuery(Query):
-    def get(self, ident):
-        # Always filter by the current user's school_id
-        return super(SchoolTenantQuery, self).filter_by(school_id=g.current_user.school_id).get(ident)
+AsyncSessionLocal = sessionmaker(
+    engine, 
+    class_=AsyncSession, 
+    expire_on_commit=False
+)
 
-    def __iter__(self):
-        return super(SchoolTenantQuery, self).filter_by(school_id=g.current_user.school_id).__iter__()
+class Base:
+    @declared_attr
+    def __tablename__(cls):
+        return cls.__name__.lower()
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, query_cls=SchoolTenantQuery)
-db_session = scoped_session(SessionLocal)
+    id = Column(Integer, primary_key=True, index=True)
+    
+    @declared_attr
+    def school_id(cls):
+        return Column(Integer, ForeignKey("school.id"), nullable=False)
 
-Base = declarative_base()
-Base.query = db_session.query_property()
+    @declared_attr
+    def school(cls):
+        return relationship("School")
 
-def get_db():
-    """Get a database session."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+Base = declarative_base(cls=Base)
 
-def init_db():
-    """Initialize the database by creating all tables."""
-    import app.models  # Import models to ensure they are registered
-    Base.metadata.create_all(bind=engine)
+# Import models
+import app.models.attendance
+import app.models.fingerprint
+import app.models.parent
+import app.models.school
+import app.models.stream
+import app.models.student
+import app.models.teacher
+import app.models.user
 
-# Function to drop the existing tables and create them anew
-def reset_db():
-    """Drop all tables and recreate them."""
-    Base.metadata.drop_all(bind=engine)  # Drop all tables
-    init_db()  # Recreate tables
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session
+
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+async def reset_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await init_db()
+
+async def close_db():
+    await engine.dispose()

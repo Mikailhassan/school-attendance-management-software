@@ -1,3 +1,4 @@
+#app/models/base.py
 from sqlalchemy.ext.declarative import declared_attr, declarative_base
 from sqlalchemy import Column, Integer, ForeignKey
 from sqlalchemy.orm import relationship

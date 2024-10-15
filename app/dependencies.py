@@ -1,7 +1,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import List, Optional
 
 from app.database import get_db
 from app.services.auth_service import AuthService
@@ -62,5 +62,15 @@ async def get_current_super_admin(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not a super admin"
+        )
+    return current_user
+
+async def get_current_teacher(
+    current_user: User = Depends(get_current_active_user)
+) -> User:
+    if current_user.role != 'teacher':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not a teacher"
         )
     return current_user
