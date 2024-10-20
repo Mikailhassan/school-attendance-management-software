@@ -1,22 +1,44 @@
 import asyncio
 from logging.config import fileConfig
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.engine import Connection
-from sqlalchemy.pool import NullPool
-from alembic import context
-from app.models import Base  # Ensure this path is correct
 
-# Alembic Config object, provides access to the .ini file in use.
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
+
+
+from app.models import Base
+from app.models import (
+    Parent,
+    Student,
+    Teacher,
+    Fingerprint,
+    Attendance,
+    School,
+    Stream,
+    User,
+    RevokedToken
+)
+
+# this is the Alembic Config object, which provides access to the values within the .ini file in use.
 config = context.config
 
-# Set up Python logging based on the configuration file
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Add your model's MetaData object for 'autogenerate' support.
+# Add your model's MetaData object here for 'autogenerate' support
 target_metadata = Base.metadata
 
-# Offline migration mode, where only the SQL statements are generated without a live database connection
+# Ensure all models are imported and their metadata is included
+for model in [Parent, Student, Teacher, Fingerprint, Attendance, School, Stream, User, RevokedToken]:
+    if not hasattr(model, '__table__'):
+        raise Exception(f"Model {model.__name__} does not have a __table__ attribute. Ensure it's properly defined as a SQLAlchemy model.")
+    if model.__table__ not in target_metadata.tables.values():
+        raise Exception(f"Model {model.__name__} is not included in Base.metadata. Ensure it inherits from Base.")
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
     url = config.get_main_option("sqlalchemy.url")
@@ -30,36 +52,33 @@ def run_migrations_offline() -> None:
     with context.begin_transaction():
         context.run_migrations()
 
-# Online migration mode where an asynchronous connection to the database is established
+
 def do_run_migrations(connection: Connection) -> None:
-    """Synchronous helper to configure and run migrations."""
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
         context.run_migrations()
 
-# Async migration runner that uses sync mode to ensure compatibility with Alembic
+
 async def run_async_migrations() -> None:
-    """In this scenario we create an Engine and associate a connection with the context."""
-    connectable = create_async_engine(
-        config.get_main_option("sqlalchemy.url"),
-        poolclass=NullPool,  # Disable connection pooling in async migrations
+    """In this scenario we need to create an Engine and associate a connection with the context."""
+    connectable = async_engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
     )
 
-    # Open a connection to the database
     async with connectable.connect() as connection:
-        # Use run_sync to execute the migrations synchronously
         await connection.run_sync(do_run_migrations)
 
-    # Dispose of the engine after migrations are complete
     await connectable.dispose()
 
-# Wrapper to ensure asyncio runs properly for online migrations
+
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     asyncio.run(run_async_migrations())
 
-# Determine whether to run migrations in online or offline mode
+
 if context.is_offline_mode():
     run_migrations_offline()
 else:

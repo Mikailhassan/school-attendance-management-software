@@ -8,7 +8,7 @@ from pydantic import BaseModel, EmailStr, validator
 from datetime import date
 
 from app.models import User, Fingerprint, School
-from app.database import get_db
+from app.core.database import get_db
 from app.utils.password_utils import hash_password
 from app.services.fingerprint_service import FingerprintService
 

@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.models import User, School, Attendance
 from app.schemas import SchoolCreate, UserCreate, AttendanceCreate, School as SchoolSchema, UserResponse, Attendance as AttendanceSchema
-from app.database import get_db
+from app.core.database import get_db
 from app.dependencies import get_current_admin
 from app.utils.email import send_email
 from app.utils.sms import send_sms

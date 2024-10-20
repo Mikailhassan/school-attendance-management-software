@@ -1,7 +1,7 @@
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, SecretStr, validator, EmailStr
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Set
 from datetime import timedelta
 
 class Settings(BaseSettings):
@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     
     UPLOAD_FOLDER: str = Field(default="uploads", env="UPLOAD_FOLDER")
     MAX_CONTENT_LENGTH: int = Field(default=16 * 1024 * 1024, env="MAX_CONTENT_LENGTH")
-    ALLOWED_EXTENSIONS: set = {'png', 'jpg', 'jpeg', 'gif'}
+    ALLOWED_EXTENSIONS: Set[str] = Field(default={'png', 'jpg', 'jpeg', 'gif'}, env="ALLOWED_EXTENSIONS")
     
     SMTP_SERVER: Optional[str] = Field(default=None, env="SMTP_SERVER")
     SMTP_PORT: Optional[int] = Field(default=None, env="SMTP_PORT")
@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
     LOG_FILE: Optional[str] = Field(default=None, env="LOG_FILE")
+
+    SUPER_ADMIN_EMAIL: EmailStr = Field(..., env="SUPER_ADMIN_EMAIL")
+    SUPER_ADMIN_PASSWORD: SecretStr = Field(..., env="SUPER_ADMIN_PASSWORD")
 
     @validator('ALLOWED_ORIGINS', pre=True)
     def parse_allowed_origins(cls, v):
@@ -51,14 +54,6 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=True
     )
-
-    def get_email_config(self) -> Dict[str, Optional[str]]:
-        return {
-            "SMTP_SERVER": self.SMTP_SERVER,
-            "SMTP_PORT": self.SMTP_PORT,
-            "SMTP_USERNAME": self.SMTP_USERNAME.email if self.SMTP_USERNAME else None,
-            "SMTP_PASSWORD": self.SMTP_PASSWORD.get_secret_value() if self.SMTP_PASSWORD else None
-        }
 
 settings = Settings()
 
@@ -80,3 +75,9 @@ def get_upload_folder() -> str:
     folder = os.path.abspath(settings.UPLOAD_FOLDER)
     os.makedirs(folder, exist_ok=True)
     return folder
+
+def get_logging_config() -> Dict[str, Optional[str]]:
+    return {
+        "log_level": settings.LOG_LEVEL,
+        "log_file": settings.LOG_FILE
+    }

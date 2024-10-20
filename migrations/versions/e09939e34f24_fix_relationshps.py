@@ -1,8 +1,8 @@
-"""Update Parent and School models
+"""Fix relationshps
 
-Revision ID: c207776433e7
-Revises: 366bfe527a27
-Create Date: 2024-10-15 11:08:30.946820
+Revision ID: e09939e34f24
+Revises: 2a411bb46a8f
+Create Date: 2024-10-19 22:31:57.345006
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'c207776433e7'
-down_revision: Union[str, None] = '366bfe527a27'
+revision: str = 'e09939e34f24'
+down_revision: Union[str, None] = '2a411bb46a8f'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

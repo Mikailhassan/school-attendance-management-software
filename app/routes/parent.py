@@ -3,7 +3,7 @@ from app.schemas import ParentCreate, Parent, UserUpdate
 from app.dependencies import get_current_active_user
 from app.models.parent import Parent as ParentModel
 from sqlalchemy.orm import Session
-from app.database import get_db
+from app.core.database import get_db
 
 router = APIRouter()
 

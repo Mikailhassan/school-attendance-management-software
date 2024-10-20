@@ -7,10 +7,8 @@ from enum import Enum
 import math
 from dataclasses import dataclass
 
-# Import your fingerprint models and database session
-# from app.utils.fingerprint import get_fingerprint_scanner, FingerprintScanner
 from app.models.fingerprint import Fingerprint
-from app.database import get_db
+from app.core.database import get_db
 
 @dataclass
 class SecurityLevel:
@@ -133,7 +131,7 @@ class FingerprintService:
         """Initialize the fingerprint scanner when needed."""
         if self.scanner is None:
             try:
-                # Uncomment the line below after setting up the actual scanner utility
+                # Initialize the scanner here. Uncomment the following line after setting up the actual scanner utility
                 # self.scanner = get_fingerprint_scanner("digitalpersona")
                 self.scanner.initialize()
             except Exception as e:
@@ -205,12 +203,11 @@ class FingerprintService:
             self.logger.error(f"Failed to delete fingerprint for user {user_id}: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to delete fingerprint.")
 
-
     async def list_fingerprints(self) -> List[Dict[str, str]]:
         """List all fingerprints stored in the database."""
         try:
             fingerprints = await self.db.query(Fingerprint).all()
-            return [{"user_id": fp.user_id, "data": fp.data} for fp in fingerprints]
+            return [{"user_id": fp.user_id, "fingerprint": fp.data} for fp in fingerprints]
         except Exception as e:
             self.logger.error(f"Failed to list fingerprints: {str(e)}")
-            raise HTTPException(status_code=500, detail="Failed to retrieve fingerprints")
+            raise HTTPException(status_code=500, detail="Failed to list fingerprints.")

@@ -1,13 +1,18 @@
-# app/__init__.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from .core.config import settings
 from app.routes import auth, admin, teacher, student, parent, attendance
-from app.database import init_db, close_db
-from app.config import settings
+from app.core.database import init_db, close_db, get_db
 from app.core.security import get_password_hash
-from app.models import User
+from app.models.user import User
+from app.models.school import School
+from sqlalchemy.future import select
+import logging
 
-def create_app():
+logging.basicConfig(level=settings.LOG_LEVEL)
+logger = logging.getLogger(__name__)
+
+def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
         description="API for managing school attendance using biometric authentication",
@@ -25,7 +30,7 @@ def create_app():
         allow_headers=["*"],
     )
 
-    # routers
+    # Include routers
     app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
     app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
     app.include_router(teacher.router, prefix="/api/v1/teachers", tags=["Teachers"])
@@ -36,27 +41,68 @@ def create_app():
     @app.on_event("startup")
     async def startup_event():
         await init_db()
-        await create_super_admin()
+        async for db in get_db():
+            await create_system_school(db)
+            await create_super_admin(db)
+        logger.info("Application startup completed")
 
     @app.on_event("shutdown")
     async def shutdown_event():
         await close_db()
+        logger.info("Application shutdown completed")
 
     return app
 
-async def create_super_admin():
-    from app.database import AsyncSessionLocal
-    async with AsyncSessionLocal() as session:
-        super_admin = await session.query(User).filter(User.role == "super_admin").first()
-        if not super_admin:
-            super_admin = User(
-                name="Super Admin",
-                email=settings.SUPER_ADMIN_EMAIL,
-                role="super_admin",
-                password_hash=get_password_hash(settings.SUPER_ADMIN_PASSWORD)
-            )
-            session.add(super_admin)
-            await session.commit()
+async def create_system_school(db):
+    """Create a system-level school for administrative purposes."""
+    stmt = select(School).filter(School.name == "System")
+    result = await db.execute(stmt)
+    system_school = result.scalar_one_or_none()
 
-# Ensure create_app is explicitly exported
-__all__ = ['create_app']
+    if not system_school:
+        # Create with all required fields
+        system_school = School(
+            name="System",
+            email="system@school.local",  # Required email field
+            phone="0000000000",           # Add phone if required
+            address="System Address",      # Add address if required
+            county="System County",        # Add county if required
+            postal_code="00000",          # Add postal code if required
+            class_system="System",        # Add class system if required
+            grade_range_start=1,          # Add grade range start if required
+            grade_range_end=12            # Add grade range end if required
+        )
+        db.add(system_school)
+        await db.commit()
+        logger.info("System school created successfully")
+    return system_school
+
+async def create_super_admin(db):
+    # First, get the system school
+    stmt = select(School).filter(School.name == "System")
+    result = await db.execute(stmt)
+    system_school = result.scalar_one_or_none()
+
+    if not system_school:
+        logger.error("System school not found")
+        return
+
+    # Check if super admin exists
+    stmt = select(User).filter(User.role == "super_admin")
+    result = await db.execute(stmt)
+    super_admin = result.scalar_one_or_none()
+
+    if not super_admin:
+        super_admin = User(
+            name="Super Admin",
+            email=settings.SUPER_ADMIN_EMAIL,
+            role="super_admin",
+            password_hash=get_password_hash(settings.SUPER_ADMIN_PASSWORD.get_secret_value()),
+            school_id=system_school.id,
+            is_active=True
+        )
+        db.add(super_admin)
+        await db.commit()
+        logger.info("Super admin created successfully")
+    else:
+        logger.info("Super admin already exists")

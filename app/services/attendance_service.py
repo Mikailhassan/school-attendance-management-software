@@ -4,14 +4,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import List, Optional, Dict, Any  
 from app.models import Attendance, User
-from app.database import get_db
+from app.core.database import get_db
 from .fingerprint_service import FingerprintService
-from app.schemas import Attendance as AttendanceRecord 
+from app.schemas import Attendance as AttendanceRecord
 
 class AttendanceService:
     def __init__(self, db: Session = Depends(get_db)):
         self.db = db
-        self.fingerprint_service = FingerprintService()
+        # Pass db to FingerprintService if required
+        self.fingerprint_service = FingerprintService(db=self.db)
 
     async def initialize_fingerprint_scanner(self, current_admin: User) -> Dict[str, str]:
         if current_admin.role != "school_admin":
@@ -26,6 +27,7 @@ class AttendanceService:
         teacher = self._get_user(teacher_id)
         
         try:
+            # Ensure capture_fingerprint is awaited correctly
             fingerprint_template = await self.fingerprint_service.capture_fingerprint()
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Fingerprint capture failed: {str(e)}")

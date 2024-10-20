@@ -1,6 +1,4 @@
 # models/__init__.py
-
-from .user import User
 from .school import School
 from .teacher import Teacher
 from .student import Student

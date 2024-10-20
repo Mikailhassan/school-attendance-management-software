@@ -5,14 +5,16 @@ from PIL import Image
 import cv2
 from fastapi import HTTPException
 import logging
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 import skimage.morphology as morph
-from scipy import ndimage
+from scipy import ndimage, signal
 import matplotlib.pyplot as plt
 
-# You may need to install these libraries
-# import pysupremafp
-# pip install scikit-image scipy matplotlib
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 class FingerprintScanner(ABC):
     @abstractmethod
@@ -30,35 +32,63 @@ class FingerprintScanner(ABC):
 class SupremaScanner(FingerprintScanner):
     def __init__(self):
         self.device = None
+        self.initialized = False
 
     async def initialize(self) -> None:
+        if self.initialized:
+            return
+            
         try:
-            self.device = pysupremafp.SupremaDevice()
-            await asyncio.to_thread(self.device.open)
+            # Note: Commented out as pysupremafp might not be available
+            # self.device = pysupremafp.SupremaDevice()
+            # await asyncio.to_thread(self.device.open)
+            self.initialized = True
+            logging.info("Suprema scanner initialized successfully")
         except Exception as e:
             logging.error(f"Failed to initialize Suprema scanner: {str(e)}")
             raise HTTPException(status_code=500, detail="Scanner initialization failed")
 
     async def capture(self) -> np.ndarray:
+        if not self.initialized:
+            await self.initialize()
+            
         try:
-            raw_image = await asyncio.to_thread(self.device.capture_image)
-            return self._preprocess_image(raw_image)
+            # For testing without actual hardware:
+            # Create a dummy fingerprint image
+            dummy_image = np.random.randint(0, 256, (500, 500), dtype=np.uint8)
+            return dummy_image
+            
+            # With actual hardware:
+            # raw_image = await asyncio.to_thread(self.device.capture_image)
+            # return self._preprocess_image(raw_image)
         except Exception as e:
-            logging.error(f"Failed to capture fingerprint with Suprema: {str(e)}")
+            logging.error(f"Failed to capture fingerprint: {str(e)}")
             raise HTTPException(status_code=500, detail="Fingerprint capture failed")
 
     async def match(self, template1: np.ndarray, template2: np.ndarray) -> float:
+        if not self.initialized:
+            await self.initialize()
+            
         try:
-            score = await asyncio.to_thread(self.device.match_templates, template1, template2)
-            return score
+            # Implement matching logic here
+            # For testing, return a random score between 0 and 1
+            return np.random.random()
+            
+            # With actual hardware:
+            # score = await asyncio.to_thread(self.device.match_templates, template1, template2)
+            # return score
         except Exception as e:
-            logging.error(f"Failed to match fingerprints with Suprema: {str(e)}")
+            logging.error(f"Failed to match fingerprints: {str(e)}")
             raise HTTPException(status_code=500, detail="Fingerprint matching failed")
 
     def _preprocess_image(self, raw_image: bytes) -> np.ndarray:
-        img = Image.frombytes('L', (500, 500), raw_image)  # Adjust size as needed
-        img_array = np.array(img)
-        return img_array
+        try:
+            img = Image.frombytes('L', (500, 500), raw_image)
+            img_array = np.array(img)
+            return img_array
+        except Exception as e:
+            logging.error(f"Failed to preprocess image: {str(e)}")
+            raise HTTPException(status_code=500, detail="Image preprocessing failed")
 
 async def enhance_fingerprint(image: np.ndarray) -> np.ndarray:
     """Enhance the fingerprint image using various techniques."""
@@ -67,15 +97,19 @@ async def enhance_fingerprint(image: np.ndarray) -> np.ndarray:
         if image.dtype != np.uint8:
             image = (image * 255).astype(np.uint8)
         
-        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        # Apply CLAHE
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         enhanced = clahe.apply(image)
         
-        # Apply Gaussian blur to reduce noise
-        enhanced = cv2.GaussianBlur(enhanced, (5, 5), 0)
+        # Noise reduction
+        enhanced = cv2.GaussianBlur(enhanced, (3, 3), 0)
         
-        # Increase contrast
-        enhanced = cv2.addWeighted(enhanced, 1.5, enhanced, -0.5, 0)
+        # Enhance contrast
+        enhanced = cv2.equalizeHist(enhanced)
+        
+        # Sharpen the image
+        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+        enhanced = cv2.filter2D(enhanced, -1, kernel)
         
         return enhanced
     except Exception as e:
@@ -85,35 +119,32 @@ async def enhance_fingerprint(image: np.ndarray) -> np.ndarray:
 def segment_fingerprint(image: np.ndarray) -> np.ndarray:
     """Segment the fingerprint from the background."""
     try:
-        # Apply threshold to separate foreground from background
-        _, thresh = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Normalize the image
+        normalized = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
         
-        # Apply morphological operations to clean up the segmentation
-        kernel = np.ones((5,5), np.uint8)
-        opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+        # Apply adaptive thresholding
+        thresh = cv2.adaptiveThreshold(
+            normalized, 
+            255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY_INV, 
+            11, 
+            2
+        )
         
-        # Find sure background area
-        sure_bg = cv2.dilate(opening, kernel, iterations=3)
+        # Clean up noise
+        kernel = np.ones((3,3), np.uint8)
+        cleaned = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
         
-        # Find sure foreground area
-        dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
-        _, sure_fg = cv2.threshold(dist_transform, 0.7*dist_transform.max(), 255, 0)
+        # Find the largest connected component
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(cleaned, 4)
         
-        # Find unknown region
-        sure_fg = np.uint8(sure_fg)
-        unknown = cv2.subtract(sure_bg, sure_fg)
+        # Find the largest non-background component
+        largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
         
-        # Marker labelling
-        _, markers = cv2.connectedComponents(sure_fg)
-        markers = markers + 1
-        markers[unknown==255] = 0
-        
-        # Apply watershed algorithm
-        markers = cv2.watershed(cv2.cvtColor(image, cv2.COLOR_GRAY2BGR), markers)
-        
-        # Create mask of segmented fingerprint
-        mask = np.zeros(image.shape, dtype="uint8")
-        mask[markers > 1] = 255
+        # Create mask of largest component
+        mask = np.zeros_like(image)
+        mask[labels == largest_label] = 255
         
         # Apply mask to original image
         segmented = cv2.bitwise_and(image, image, mask=mask)
@@ -127,73 +158,42 @@ def assess_fingerprint_quality(image: np.ndarray) -> float:
     """Assess the quality of the fingerprint image."""
     try:
         # Calculate image contrast
-        contrast = np.std(image)
+        contrast = np.std(image) / 255.0
         
         # Calculate image sharpness
         laplacian = cv2.Laplacian(image, cv2.CV_64F)
-        sharpness = np.var(laplacian)
+        sharpness = np.var(laplacian) / (255.0 ** 2)
         
-        # Calculate ridge clarity (using Sobel edges)
-        sobelx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
-        edge_strength = np.sqrt(sobelx**2 + sobely**2)
-        ridge_clarity = np.mean(edge_strength)
+        # Calculate foreground-background ratio
+        _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        foreground_ratio = np.sum(binary > 0) / binary.size
         
-        # Combine metrics (you may want to adjust the weights)
-        quality_score = (0.3 * contrast + 0.3 * sharpness + 0.4 * ridge_clarity) / 255
+        # Calculate ridge clarity
+        sobel_x = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+        ridge_clarity = np.mean(gradient_magnitude) / 255.0
         
-        return quality_score
+        # Combine metrics
+        weights = {
+            'contrast': 0.25,
+            'sharpness': 0.25,
+            'foreground_ratio': 0.25,
+            'ridge_clarity': 0.25
+        }
+        
+        quality_score = (
+            weights['contrast'] * contrast +
+            weights['sharpness'] * sharpness +
+            weights['foreground_ratio'] * foreground_ratio +
+            weights['ridge_clarity'] * ridge_clarity
+        )
+        
+        return min(max(quality_score, 0.0), 1.0)  # Ensure score is between 0 and 1
+        
     except Exception as e:
         logging.error(f"Failed to assess fingerprint quality: {str(e)}")
-        raise HTTPException(status_code=500, detail="Fingerprint quality assessment failed")
-
-def estimate_ridge_frequency(image: np.ndarray, block_size: int = 16) -> np.ndarray:
-    """Estimate the ridge frequency of the fingerprint image."""
-    try:
-        # Normalize the image
-        normalized = cv2.normalize(image, None, 0, 1, cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-        
-        # Calculate gradients
-        gy, gx = np.gradient(normalized)
-        
-        # Calculate orientation
-        gxx = gx * gx
-        gyy = gy * gy
-        gxy = gx * gy
-        
-        height, width = image.shape
-        orientation = np.zeros((height // block_size, width // block_size))
-        frequency = np.zeros_like(orientation)
-        
-        for i in range(0, height, block_size):
-            for j in range(0, width, block_size):
-                gxx_block = gxx[i:i+block_size, j:j+block_size]
-                gyy_block = gyy[i:i+block_size, j:j+block_size]
-                gxy_block = gxy[i:i+block_size, j:j+block_size]
-                
-                orientation[i//block_size, j//block_size] = 0.5 * np.arctan2(
-                    2 * np.sum(gxy_block),
-                    np.sum(gxx_block - gyy_block)
-                )
-                
-                # Project gradients
-                rotated = ndimage.rotate(normalized[i:i+block_size, j:j+block_size], 
-                                         orientation[i//block_size, j//block_size] * 180 / np.pi,
-                                         reshape=False)
-                
-                # Sum projected gradients
-                projection = np.sum(rotated, axis=0)
-                
-                # Find peaks
-                peaks, _ = find_peaks(projection)
-                
-                if len(peaks) >= 2:
-                    frequency[i//block_size, j//block_size] = len(peaks) / (peaks[-1] - peaks[0])
-        
-        return frequency
-    except Exception as e:
-        logging.error(f"Failed to estimate ridge frequency: {str(e)}")
-        raise HTTPException(status_code=500, detail="Ridge frequency estimation failed")
+        raise HTTPException(status_code=500, detail="Quality assessment failed")
 
 def extract_minutiae(image: np.ndarray) -> List[Tuple[int, int, float]]:
     """Extract minutiae points from the fingerprint image."""
@@ -202,121 +202,194 @@ def extract_minutiae(image: np.ndarray) -> List[Tuple[int, int, float]]:
         _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
         # Thin the binary image
-        thinned = morph.thin(binary)
+        thinned = morph.thin(binary > 0)
         
-        # Find minutiae points
+        # Convert to uint8
+        thinned = thinned.astype(np.uint8) * 255
+        
         minutiae = []
         
-        def get_pixel(img, center, x, y):
-            new_x = min(center[0] + x, img.shape[0] - 1)
-            new_y = min(center[1] + y, img.shape[1] - 1)
-            return img[new_x, new_y]
-
-        for i in range(1, thinned.shape[0] - 1):
-            for j in range(1, thinned.shape[1] - 1):
-                if thinned[i, j] == 1:
-                    P = [get_pixel(thinned, (i,j), x, y) for x, y in [
-                        (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]]
-                    if sum(P) == 1:
-                        minutiae.append((i, j, 0))  # Endpoint
-                    elif sum(P) == 3:
-                        minutiae.append((i, j, 1))  # Bifurcation
+        # Crossing number method
+        def get_crossing_number(values):
+            return np.sum(np.abs(np.diff(values + [values[0]]))) // 2
+        
+        height, width = thinned.shape
+        for i in range(1, height - 1):
+            for j in range(1, width - 1):
+                if thinned[i, j] == 255:  # Ridge pixel
+                    # Get 8-neighborhood
+                    values = [
+                        thinned[i-1, j-1] // 255,
+                        thinned[i-1, j] // 255,
+                        thinned[i-1, j+1] // 255,
+                        thinned[i, j+1] // 255,
+                        thinned[i+1, j+1] // 255,
+                        thinned[i+1, j] // 255,
+                        thinned[i+1, j-1] // 255,
+                        thinned[i, j-1] // 255
+                    ]
+                    
+                    cn = get_crossing_number(values)
+                    
+                    if cn == 1:  # Ridge ending
+                        minutiae.append((i, j, 0))
+                    elif cn == 3:  # Ridge bifurcation
+                        minutiae.append((i, j, 1))
         
         return minutiae
+        
     except Exception as e:
         logging.error(f"Failed to extract minutiae: {str(e)}")
         raise HTTPException(status_code=500, detail="Minutiae extraction failed")
 
-def create_fingerprint_template(image: np.ndarray, minutiae: List[Tuple[int, int, float]]) -> np.ndarray:
-    """Create a fingerprint template from the image and extracted minutiae."""
+def create_fingerprint_template(
+    image: np.ndarray, 
+    minutiae: List[Tuple[int, int, float]]
+) -> Dict[str, Any]:
+    """Create a comprehensive fingerprint template."""
     try:
-        # This is a simplified template creation. In practice, you'd want to include more information
-        # such as ridge orientation, frequency, etc.
-        template = np.zeros((len(minutiae), 3), dtype=np.float32)
-        for i, (x, y, minutia_type) in enumerate(minutiae):
-            template[i] = [x, y, minutia_type]
+        template = {
+            'image_size': image.shape,
+            'minutiae': np.array(minutiae),
+            'ridge_orientation': calculate_ridge_orientation(image),
+            'ridge_frequency': estimate_ridge_frequency(image),
+            'core_points': detect_core_points(image)
+        }
         return template
     except Exception as e:
-        logging.error(f"Failed to create fingerprint template: {str(e)}")
-        raise HTTPException(status_code=500, detail="Fingerprint template creation failed")
+        logging.error(f"Failed to create template: {str(e)}")
+        raise HTTPException(status_code=500, detail="Template creation failed")
 
-async def process_fingerprint(scanner: SupremaScanner):
+def calculate_ridge_orientation(image: np.ndarray, block_size: int = 16) -> np.ndarray:
+    """Calculate ridge orientation field."""
+    try:
+        # Calculate gradients
+        gx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
+        gy = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
+        
+        # Calculate gradient covariance
+        gxx = gx * gx
+        gyy = gy * gy
+        gxy = gx * gy
+        
+        # Block processing
+        height, width = image.shape
+        orientation = np.zeros((height // block_size, width // block_size))
+        
+        for i in range(0, height - block_size, block_size):
+            for j in range(0, width - block_size, block_size):
+                gxx_block = gxx[i:i+block_size, j:j+block_size]
+                gyy_block = gyy[i:i+block_size, j:j+block_size]
+                gxy_block = gxy[i:i+block_size, j:j+block_size]
+                
+                # Calculate dominant direction
+                orientation[i//block_size, j//block_size] = 0.5 * np.arctan2(
+                    2 * np.sum(gxy_block),
+                    np.sum(gxx_block - gyy_block)
+                )
+        
+        return orientation
+    except Exception as e:
+        logging.error(f"Failed to calculate ridge orientation: {str(e)}")
+        return np.zeros((image.shape[0]//16, image.shape[1]//16))
+
+def estimate_ridge_frequency(image: np.ndarray, block_size: int = 16) -> np.ndarray:
+    """Estimate ridge frequency in the fingerprint image."""
+    try:
+        # Calculate orientation field
+        orientation = calculate_ridge_orientation(image, block_size)
+        
+        height, width = image.shape
+        frequency = np.zeros((height // block_size, width // block_size))
+        
+        for i in range(0, height - block_size, block_size):
+            for j in range(0, width - block_size, block_size):
+                block = image[i:i+block_size, j:j+block_size]
+                angle = orientation[i//block_size, j//block_size]
+                
+                # Rotate block to align ridges vertically
+                rotated = ndimage.rotate(block, angle * 180 / np.pi - 90, reshape=False)
+                
+                # Project along columns
+                projection = np.sum(rotated, axis=1)
+                
+                # Find peaks
+                peaks, _ = signal.find_peaks(projection)
+                
+                if len(peaks) >= 2:
+                    # Calculate frequency from average peak distance
+                    frequency[i//block_size, j//block_size] = len(peaks) / block_size
+        
+        return frequency
+    except Exception as e:
+        logging.error(f"Failed to estimate ridge frequency: {str(e)}")
+        return np.zeros((image.shape[0]//16, image.shape[1]//16))
+
+def detect_core_points(image: np.ndarray) -> List[Tuple[int, int]]:
+    """Detect core points in the fingerprint."""
+    try:
+        # Calculate orientation field
+        orientation = calculate_ridge_orientation(image)
+        
+        # Calculate Poincare index
+        core_points = []
+        height, width = orientation.shape
+        
+        for i in range(1, height - 1):
+            for j in range(1, width - 1):
+                # Get orientation values in 2x2 neighborhood
+                angles = [
+                    orientation[i-1, j-1],
+                    orientation[i-1, j],
+                    orientation[i, j],
+                    orientation[i, j-1]
+                ]
+                
+                # Calculate Poincare index
+                index = sum(np.diff([*angles, angles[0]]))
+                
+                if abs(index) > np.pi:  # Core point detected
+                    core_points.append((i * 16, j * 16))  # Scale back to image coordinates
+        
+        return core_points
+    except Exception as e:
+        logging.error(f"Failed to detect core points: {str(e)}")
+        return []
+
+async def process_fingerprint(scanner: SupremaScanner) -> Dict[str, Any]:
     """Process a fingerprint from the scanner."""
     try:
+        # Capture the fingerprint
+        raw_image = await scanner.capture
         raw_image = await scanner.capture()
-        
-        # Segment the fingerprint
-        segmented_image = segment_fingerprint(raw_image)
-        
+
         # Enhance the fingerprint image
-        enhanced_image = await enhance_fingerprint(segmented_image)
-        
-        # Assess quality
-        quality_score = assess_fingerprint_quality(enhanced_image)
-        if quality_score < 0.5:  # Example threshold
-            raise HTTPException(status_code=400, detail=f"Fingerprint quality is too low: {quality_score:.2f}")
-        
-        # Estimate ridge frequency
-        frequency_image = estimate_ridge_frequency(enhanced_image)
-        
-        # Extract minutiae
-        minutiae = extract_minutiae(enhanced_image)
-        
-        # Create template
-        template = create_fingerprint_template(enhanced_image, minutiae)
-        
+        enhanced_image = await enhance_fingerprint(raw_image)
+
+        # Segment the fingerprint from the background
+        segmented_image = segment_fingerprint(enhanced_image)
+
+        # Assess the quality of the fingerprint
+        quality_score = assess_fingerprint_quality(segmented_image)
+        if quality_score < 0.5:  # Threshold can be adjusted based on testing
+            raise HTTPException(status_code=400, detail="Fingerprint quality is too low for processing")
+
+        # Extract minutiae points
+        minutiae = extract_minutiae(segmented_image)
+
+        # Create a fingerprint template
+        template = create_fingerprint_template(segmented_image, minutiae)
+
         return {
-            'enhanced_image': enhanced_image,
-            'quality_score': quality_score,
-            'frequency_image': frequency_image,
-            'minutiae': minutiae,
-            'template': template
+            "raw_image": raw_image,
+            "enhanced_image": enhanced_image,
+            "segmented_image": segmented_image,
+            "quality_score": quality_score,
+            "template": template
         }
+    except HTTPException as e:
+        logging.error(f"Fingerprint processing error: {str(e)}")
+        raise
     except Exception as e:
-        logging.error(f"Error processing fingerprint: {str(e)}")
+        logging.error(f"Unexpected error during fingerprint processing: {str(e)}")
         raise HTTPException(status_code=500, detail="Fingerprint processing failed")
-
-async def match_fingerprints(scanner: SupremaScanner, template1: np.ndarray, template2: np.ndarray) -> float:
-    """Match two fingerprint templates."""
-    try:
-        match_score = await scanner.match(template1, template2)
-        return match_score
-    except Exception as e:
-        logging.error(f"Error matching fingerprints: {str(e)}")
-        raise HTTPException(status_code=500, detail="Fingerprint matching failed")
-
-# Visualization function for debugging and analysis
-def visualize_fingerprint(image: np.ndarray, minutiae: List[Tuple[int, int, float]], title: str):
-    plt.figure(figsize=(10, 10))
-    plt.imshow(image, cmap='gray')
-    for x, y, minutia_type in minutiae:
-        if minutia_type == 0:  # Endpoint
-            plt.plot(y, x, 'ro', markersize=5)
-        else:  # Bifurcation
-            plt.plot(y, x, 'bo', markersize=5)
-    plt.title(title)
-    plt.axis('off')
-    plt.show()
-
-# Usage example
-async def main():
-    scanner = SupremaScanner()
-    await scanner.initialize()
-    
-    # Process first fingerprint
-    print("Place your finger on the scanner for the first scan...")
-    result1 = await process_fingerprint(scanner)
-    
-    print(f"First fingerprint processed. Quality score: {result1['quality_score']:.2f}")
-    visualize_fingerprint(result1['enhanced_image'], result1['minutiae'], "First Fingerprint")
-    
-    # Process second fingerprint
-    print("Place your finger on the scanner for the second scan...")
-    result2 = await process_fingerprint(scanner)
-    
-    print(f"Second fingerprint processed. Quality score: {result2['quality_score']:.2f}")
-    visualize_fingerprint(result2['enhanced_image'], result2['minutiae'], "Second Fingerprint")
-    
-    # Match fingerprints
-    match_score = await match_fingerprints(scanner, result1['template'], result2['template'])
-    print(f"Match score: {match_score:.2f}")

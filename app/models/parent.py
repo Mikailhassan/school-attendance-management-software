@@ -1,23 +1,24 @@
-from sqlalchemy import Column, String, Integer, ForeignKey
-from sqlalchemy.orm import relationship as orm_relationship
-from app.database import Base
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from .base import TenantModel
 
-class Parent(Base, TenantModel):
+class Parent(TenantModel):
     __tablename__ = "parents"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
-    school_id = Column(Integer, ForeignKey('schools.id'), nullable=False)  # Add school_id foreign key
+    school_id = Column(Integer, ForeignKey('schools.id'), nullable=False)  # Add foreign key for School
     name = Column(String, nullable=False)
     phone = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False)
-    relationship_type = Column(String, nullable=False)
+    address = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    # Relationships
-    user = orm_relationship("User", back_populates="parent_profile")
-    students = orm_relationship("Student", back_populates="parent")
-    school = orm_relationship("School", back_populates="parents")  # Add relationship to School
+    user = relationship("User", back_populates="parent_profile")
+    students = relationship("Student", back_populates="parent")
+    school = relationship("School", back_populates="parents")  # Add relationship with School
 
     def __repr__(self):
-        return f"<Parent(id={self.id}, name={self.name}, email={self.email})>"
+        return f"<Parent(name={self.name}, email={self.email})>"

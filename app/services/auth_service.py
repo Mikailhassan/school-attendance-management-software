@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 from app.services.fingerprint_service import FingerprintService
 from app.models import Fingerprint, User
-from app.database import get_db
+from app.core.database import get_db
 from passlib.context import CryptContext
 
 # JWT Configuration

@@ -1,8 +1,8 @@
-"""Add school_id to Parent model
+"""Fix relationship structures again
 
-Revision ID: 366bfe527a27
-Revises: e1b365929d1b
-Create Date: 2024-10-15 10:54:22.236914
+Revision ID: ca7f504afda7
+Revises: b55579550ddb
+Create Date: 2024-10-19 22:25:21.371546
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '366bfe527a27'
-down_revision: Union[str, None] = 'e1b365929d1b'
+revision: str = 'ca7f504afda7'
+down_revision: Union[str, None] = 'b55579550ddb'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
