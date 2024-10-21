@@ -19,7 +19,7 @@ class EmailConfig(BaseModel):
 def get_email_config() -> EmailConfig:
     return EmailConfig(
         MAIL_USERNAME="mikailismail260@gmail.com",
-        MAIL_PASSWORD="cbfhfrhfr89ff",
+        MAIL_PASSWORD="cbfhfrhfr89f",
         MAIL_FROM="mikailismail260@gmail.com",
         MAIL_PORT=587,
         MAIL_SERVER="smtp.gmail.com",
