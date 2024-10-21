@@ -38,7 +38,6 @@ router = APIRouter(prefix="/attendance", tags=["attendance"])
 
 # Global scanner instance
 scanner_instance = None
-scanning_task = None
 
 class AttendanceException(HTTPException):
     """Custom exception for attendance-related errors"""
@@ -49,27 +48,13 @@ class AttendanceException(HTTPException):
 @asynccontextmanager
 async def get_scanner():
     """Context manager for scanner initialization and cleanup"""
-    scanner = None
+    global scanner_instance
+    if scanner_instance is None:
+        raise AttendanceException(detail="Scanner not initialized", status_code=400)
     try:
-        if DEV_MODE:
-            logger.info("Using mock fingerprint scanner (Development Mode)")
-            scanner = MockFingerprint()
-        else:
-            for attempt in range(SCANNER_RETRY_LIMIT):
-                try:
-                    logger.info(f"Initializing production scanner (attempt {attempt + 1})")
-                    scanner = SupremaScanner()
-                    break
-                except Exception as e:
-                    if attempt < SCANNER_RETRY_LIMIT - 1:
-                        logger.warning(f"Scanner initialization failed, retrying: {str(e)}")
-                        await asyncio.sleep(SCANNER_RETRY_DELAY)
-                    else:
-                        raise
-        yield scanner
+        yield scanner_instance
     finally:
-        if scanner and not DEV_MODE:
-            await scanner.cleanup()
+        pass  # We're not cleaning up the scanner after each use anymore
 
 async def process_attendance_mark(
     user_id: str,
@@ -88,71 +73,33 @@ async def process_attendance_mark(
             status_code=500
         )
 
-async def continuous_scanning(
-    attendance_service: AttendanceService
-):
-    """Continuous fingerprint scanning process"""
-    logger.info(f"Starting continuous scanning in {'development' if DEV_MODE else 'production'} mode")
-    
-    while True:
-        async with get_scanner() as scanner:
-            try:
-                if DEV_MODE:
-                    await asyncio.sleep(5)
-                    mock_data = await scanner.generate_mock_fingerprint_data()
-                    await attendance_service.mark_attendance(
-                        mock_data["template"]["user_id"],
-                        "check_in"
-                    )
-                    logger.debug(f"Dev mode: Marked mock attendance for user {mock_data['template']['user_id']}")
-                else:
-                    fingerprint_data = await process_fingerprint(scanner)
-                    if fingerprint_data and fingerprint_data.get("template"):
-                        user_id = await attendance_service.match_fingerprint(fingerprint_data["template"])
-                        if user_id:
-                            current_hour = datetime.now().hour
-                            check_type = "check_in" if current_hour < 12 else "check_out"
-                            await attendance_service.mark_attendance(str(user_id), check_type)
-            except Exception as e:
-                if not DEV_MODE:
-                    logger.error(f"Error in continuous scanning: {str(e)}")
-                    await asyncio.sleep(SCANNER_RETRY_DELAY)
-            finally:
-                if not DEV_MODE:
-                    await asyncio.sleep(1)
-
-# Startup and shutdown events
-@router.on_event("startup")
-async def startup_event():
-    """Initialize continuous scanning on startup"""
-    try:
-        attendance_service = AttendanceService()
-        global scanning_task
-        scanning_task = asyncio.create_task(continuous_scanning(attendance_service))
-        logger.info("Successfully initialized continuous scanning")
-    except Exception as e:
-        logger.error(f"Failed to start continuous scanning: {str(e)}")
-
-@router.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    global scanning_task
-    if scanning_task:
-        scanning_task.cancel()
-        try:
-            await scanning_task
-        except asyncio.CancelledError:
-            pass
-    logger.info("Shutdown complete")
-
 # Route handlers
 @router.post("/initialize-scanner", response_model=Dict[str, str])
 async def initialize_scanner(
-    current_admin: User = Depends(get_current_school_admin),
-    attendance_service: AttendanceService = Depends(AttendanceService)
+    current_admin: User = Depends(get_current_school_admin)
 ):
     """Initialize the fingerprint scanner"""
-    return await attendance_service.initialize_fingerprint_scanner(current_admin)
+    global scanner_instance
+    try:
+        if DEV_MODE:
+            logger.info("Using mock fingerprint scanner (Development Mode)")
+            scanner_instance = MockFingerprint()
+        else:
+            for attempt in range(SCANNER_RETRY_LIMIT):
+                try:
+                    logger.info(f"Initializing production scanner (attempt {attempt + 1})")
+                    scanner_instance = SupremaScanner()
+                    break
+                except Exception as e:
+                    if attempt < SCANNER_RETRY_LIMIT - 1:
+                        logger.warning(f"Scanner initialization failed, retrying: {str(e)}")
+                        await asyncio.sleep(SCANNER_RETRY_DELAY)
+                    else:
+                        raise
+        return {"message": "Scanner initialized successfully"}
+    except Exception as e:
+        logger.error(f"Failed to initialize scanner: {str(e)}")
+        raise AttendanceException(detail="Failed to initialize scanner", status_code=500)
 
 @router.post("/teachers/mark", response_model=AttendanceResponse)
 async def mark_teacher_attendance_route(
@@ -341,17 +288,30 @@ async def get_scanner_status(
     current_admin: User = Depends(get_current_school_admin)
 ):
     """Get the current status of the fingerprint scanner"""
+    global scanner_instance
     try:
-        async with get_scanner() as scanner:
-            status = await scanner.get_status()
+        if scanner_instance is None:
             return {
-                "status": status,
+                "status": "Not initialized",
                 "mode": "development" if DEV_MODE else "production",
-                "scanning_active": scanning_task is not None and not scanning_task.done()
             }
+        status = await scanner_instance.get_status()
+        return {
+            "status": status,
+            "mode": "development" if DEV_MODE else "production",
+        }
     except Exception as e:
         logger.error(f"Error getting scanner status: {str(e)}")
         raise AttendanceException(
             detail="Failed to get scanner status",
             status_code=500
         )
+
+# Shutdown event
+@router.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    global scanner_instance
+    if scanner_instance and not DEV_MODE:
+        await scanner_instance.cleanup()
+    logger.info("Shutdown complete")
