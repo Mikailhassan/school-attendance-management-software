@@ -9,6 +9,10 @@ from dataclasses import dataclass
 
 from app.models.fingerprint import Fingerprint
 from app.core.database import get_db
+from app.utils.fingerprint import (
+    FingerprintScanner, SupremaScanner, ZKTecoScanner, DigitalPersonaScanner,
+    process_fingerprint
+)
 
 @dataclass
 class SecurityLevel:
@@ -124,26 +128,26 @@ class FingerprintService:
     def __init__(self, db: Session = Depends(get_db)):
         self.logger = logging.getLogger(__name__)
         self.db = db
-        self.scanner = None  # Initialize scanner as None to avoid immediate initialization
+        self.scanner = self._initialize_scanner()
         self.threshold_calculator = ThresholdCalculator(SecurityRequirement.MEDIUM)
 
-    def _initialize_scanner(self):
-        """Initialize the fingerprint scanner when needed."""
-        if self.scanner is None:
-            try:
-                # Initialize the scanner here. Uncomment the following line after setting up the actual scanner utility
-                # self.scanner = get_fingerprint_scanner("digitalpersona")
-                self.scanner.initialize()
-            except Exception as e:
-                self.logger.error(f"Failed to initialize fingerprint scanner: {str(e)}")
-                raise HTTPException(status_code=500, detail="Fingerprint scanner initialization failed")
+    def _initialize_scanner(self) -> FingerprintScanner:
+        """Initialize the fingerprint scanner."""
+        try:
+            # Uncomment the appropriate scanner initialization based on your hardware
+            # return SupremaScanner()
+            # return ZKTecoScanner()
+            # return DigitalPersonaScanner()
+            return SupremaScanner()  # Using Suprema for this example
+        except Exception as e:
+            self.logger.error(f"Failed to initialize fingerprint scanner: {str(e)}")
+            raise HTTPException(status_code=500, detail="Fingerprint scanner initialization failed")
 
     async def capture_fingerprint(self, user_id: str) -> None:
         """Capture a fingerprint and save it to the database."""
-        self._initialize_scanner()  # Initialize scanner only when capturing a fingerprint
         try:
-            fingerprint_data = await self.scanner.capture()
-            new_fingerprint = Fingerprint(user_id=user_id, data=fingerprint_data)
+            fingerprint_data = await process_fingerprint(self.scanner)
+            new_fingerprint = Fingerprint(user_id=user_id, data=fingerprint_data['template'])
             self.db.add(new_fingerprint)
             await self.db.commit()
             self.logger.info(f"Fingerprint captured and saved for user {user_id}.")
@@ -153,14 +157,14 @@ class FingerprintService:
 
     async def match_fingerprint(self, user_id: str, fingerprint_data: bytes) -> bool:
         """Match a fingerprint against the stored fingerprint for a user."""
-        self._initialize_scanner()  # Initialize scanner when matching a fingerprint
         try:
             stored_fingerprint = await self.db.query(Fingerprint).filter(Fingerprint.user_id == user_id).first()
             if not stored_fingerprint:
                 self.logger.warning(f"No fingerprint found for user {user_id}.")
                 return False
             
-            match_score = await self.scanner.match(stored_fingerprint.data, fingerprint_data)
+            captured_fingerprint = await process_fingerprint(self.scanner)
+            match_score = await self.scanner.match(stored_fingerprint.data, captured_fingerprint['template'])
             threshold = self._get_matching_threshold()
             match_result = match_score >= threshold
             
@@ -211,3 +215,17 @@ class FingerprintService:
         except Exception as e:
             self.logger.error(f"Failed to list fingerprints: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to list fingerprints.")
+
+    async def continuous_scanning(self):
+        """Continuously scan for fingerprints."""
+        try:
+            while True:
+                fingerprint_data = await process_fingerprint(self.scanner)
+                # Process the scanned fingerprint data as needed
+                #  match it against stored fingerprints
+                self.logger.info("Fingerprint scanned in continuous mode.")
+                # Add a small delay to prevent overwhelming the system
+                await asyncio.sleep(1)
+        except Exception as e:
+            self.logger.error(f"Error in continuous scanning: {str(e)}")
+            raise HTTPException(status_code=500, detail="Continuous scanning failed")

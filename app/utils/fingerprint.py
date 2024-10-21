@@ -8,7 +8,6 @@ import logging
 from typing import List, Tuple, Dict, Any
 import skimage.morphology as morph
 from scipy import ndimage, signal
-import matplotlib.pyplot as plt
 
 # Configure logging
 logging.basicConfig(
@@ -89,6 +88,14 @@ class SupremaScanner(FingerprintScanner):
         except Exception as e:
             logging.error(f"Failed to preprocess image: {str(e)}")
             raise HTTPException(status_code=500, detail="Image preprocessing failed")
+
+class ZKTecoScanner(FingerprintScanner):
+    # Implement ZKTeco scanner class similarly to SupremaScanner
+    pass
+
+class DigitalPersonaScanner(FingerprintScanner):
+    # Implement Digital Persona scanner class similarly to SupremaScanner
+    pass
 
 async def enhance_fingerprint(image: np.ndarray) -> np.ndarray:
     """Enhance the fingerprint image using various techniques."""
@@ -338,8 +345,7 @@ def detect_core_points(image: np.ndarray) -> List[Tuple[int, int]]:
         for i in range(1, height - 1):
             for j in range(1, width - 1):
                 # Get orientation values in 2x2 neighborhood
-                angles = [
-                    orientation[i-1, j-1],
+                angles = [orientation[i-1, j-1],
                     orientation[i-1, j],
                     orientation[i, j],
                     orientation[i, j-1]
@@ -356,11 +362,10 @@ def detect_core_points(image: np.ndarray) -> List[Tuple[int, int]]:
         logging.error(f"Failed to detect core points: {str(e)}")
         return []
 
-async def process_fingerprint(scanner: SupremaScanner) -> Dict[str, Any]:
+async def process_fingerprint(scanner: FingerprintScanner) -> Dict[str, Any]:
     """Process a fingerprint from the scanner."""
     try:
         # Capture the fingerprint
-        raw_image = await scanner.capture
         raw_image = await scanner.capture()
 
         # Enhance the fingerprint image

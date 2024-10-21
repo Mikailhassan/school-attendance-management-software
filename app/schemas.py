@@ -275,6 +275,12 @@ class AttendanceAnalytics(BaseModel):
     class Config:
         from_attributes = True
 
+class AttendanceResponse(BaseModel):
+    user_id: str
+    check_type: str
+    timestamp: str
+    message: Optional[str] = None        
+
 # Generic Page Model for Pagination
 T = TypeVar('T')
 
