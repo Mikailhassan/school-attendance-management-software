@@ -49,8 +49,32 @@ async def send_sms(sms: SMS, config: SMSConfig = SMSConfig()) -> Dict[str, Any]:
         print(f"Failed to send SMS: {str(e)}")
         return {"status": "failed", "error": str(e)}
 
+async def send_school_welcome_sms(school_phone: str, school_name: str):
+    """Send a welcome SMS to a newly registered school"""
+    sms = SMS(
+        to=school_phone,
+        body=f"Welcome, {school_name}! Thank you for joining Youventa Attendance Management System. We're excited to help you manage your school's attendance efficiently."
+    )
+    return await send_sms(sms)
+
+async def send_student_check_notification_sms(parent_phone: str, student_name: str, check_type: str):
+    """Send a notification SMS to parents when their child checks in or out"""
+    action = "checked in to" if check_type == "check_in" else "checked out of"
+    sms = SMS(
+        to=parent_phone,
+        body=f"This is to inform you that {student_name} has successfully {action} school."
+    )
+    return await send_sms(sms)
+
+async def send_teacher_reminder_sms(teacher_phone: str, teacher_name: str, missing_action: str):
+    """Send a reminder SMS to teachers if they forget to check in or out"""
+    sms = SMS(
+        to=teacher_phone,
+        body=f"Dear {teacher_name}, This is a friendly reminder that you have not {missing_action} today. Please remember to mark your attendance regularly."
+    )
+    return await send_sms(sms)
+
 # Example usage
-# async def notify_user(phone_number: str, notification: str):
-#     sms = SMS(to=phone_number, body=notification)
-#     result = await send_sms(sms)
-#     return result
+# await send_school_welcome_sms("+1234567890", "Sunshine Elementary")
+# await send_student_check_notification_sms("+1234567890", "John Doe", "check_in")
+# await send_teacher_reminder_sms("+1234567890", "Ms. Smith", "checked in")

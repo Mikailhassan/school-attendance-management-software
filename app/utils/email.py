@@ -64,13 +64,46 @@ async def send_email(
     except Exception as e:
         print(f"Failed to send email: {str(e)}")
 
-# Send a welcome email
-async def send_welcome_email(user_email: EmailStr):
+async def send_school_welcome_email(school_email: EmailStr, school_name: str):
+    """Send a welcome email to a newly registered school"""
     await send_email(
-        recipients=[user_email],
-        subject="Welcome to Our School System",
-        body="<h1>Welcome!</h1><p>Thank you for joining our school system.</p>"
+        recipients=[school_email],
+        subject="Welcome to Youventa Attendance Management System",
+        body=f"""
+        <h1>Welcome, {school_name}!</h1>
+        <p>Thank you for joining Youventa Attendance Management System. We're excited to help you manage your school's attendance efficiently.</p>
+        <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
+        """
+    )
+
+async def send_student_check_notification(parent_email: EmailStr, student_name: str, check_type: str):
+    """Send a notification to parents when their child checks in or out"""
+    action = "checked in to" if check_type == "check_in" else "checked out of"
+    await send_email(
+        recipients=[parent_email],
+        subject=f"Student {check_type.capitalize()} Notification",
+        body=f"""
+        <h1>Student Attendance Update</h1>
+        <p>Dear Parent,</p>
+        <p>This is to inform you that {student_name} has successfully {action} school.</p>
+        <p>If you have any questions, please contact the school administration.</p>
+        """
+    )
+
+async def send_teacher_reminder(teacher_email: EmailStr, teacher_name: str, missing_action: str):
+    """Send a reminder to teachers if they forget to check in or out"""
+    await send_email(
+        recipients=[teacher_email],
+        subject="Attendance Check Reminder",
+        body=f"""
+        <h1>Attendance Check Reminder</h1>
+        <p>Dear {teacher_name},</p>
+        <p>This is a friendly reminder that you have not {missing_action} today. Please remember to mark your attendance regularly.</p>
+        <p>If you have any issues with the attendance system, please contact the school administration.</p>
+        """
     )
 
 # Example usage
-# await send_welcome_email("mikailismail260@gmail.com")
+# await send_school_welcome_email("school@example.com", "Sunshine Elementary")
+# await send_student_check_notification("parent@example.com", "John Doe", "check_in")
+# await send_teacher_reminder("teacher@example.com", "Ms. Smith", "checked in")
