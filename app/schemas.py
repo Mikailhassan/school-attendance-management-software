@@ -36,10 +36,11 @@ class UserBase(BaseModel):
         from_attributes = True
 
 # User Creation Model
-class UserCreate(UserBase):
+class UserCreate(BaseModel):
+    email: EmailStr
     password: str
-    role: UserRole
-    school_id: Optional[int] = None
+    full_name: str
+    role: str
 
 # User Response Model
 class UserResponse(UserBase):
