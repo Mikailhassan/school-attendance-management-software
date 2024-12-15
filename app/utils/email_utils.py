@@ -71,7 +71,7 @@ async def send_school_welcome_email(school_email: EmailStr, school_name: str):
         subject="Welcome to Youventa Attendance Management System",
         body=f"""
         <h1>Welcome, {school_name}!</h1>
-        <p>Thank you for joining Youventa Attendance Management System. We're excited to help you manage your school's attendance efficiently.</p>
+        <p>Thank you for joining Yoventa Attendance Management System. We're excited to help you manage your school's attendance efficiently.</p>
         <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
         """
     )
@@ -103,7 +103,3 @@ async def send_teacher_reminder(teacher_email: EmailStr, teacher_name: str, miss
         """
     )
 
-# Example usage
-# await send_school_welcome_email("school@example.com", "Sunshine Elementary")
-# await send_student_check_notification("parent@example.com", "John Doe", "check_in")
-# await send_teacher_reminder("teacher@example.com", "Ms. Smith", "checked in")

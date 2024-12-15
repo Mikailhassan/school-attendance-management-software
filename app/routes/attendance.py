@@ -1,317 +1,315 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi import (
+    APIRouter, 
+    Depends, 
+    HTTPException, 
+    File, 
+    UploadFile, 
+    status
+)
+from fastapi.responses import JSONResponse
 from typing import List, Optional, Dict, Any
-from datetime import date, timedelta, datetime
-import asyncio
+from pydantic import BaseModel, Field, validator
+from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import date, datetime, timedelta
 import csv
 import io
-import os
-import logging
-from contextlib import asynccontextmanager
+import pandas as pd
+import uuid
 
-# Local imports
-from app.services.attendance_service import AttendanceService
-from app.utils.fingerprint import process_fingerprint, SupremaScanner, FingerprintScanner
-from app.dependencies import get_current_teacher, get_current_school_admin
-from app.schemas import (
-    AttendanceRequest, 
-    WeeklyAttendanceResponse, 
-    PeriodAttendanceResponse,
-    AttendanceResponse
-)
-from app.models import User
-from app.utils.mock_fingerprint import MockFingerprint
+# Enums for standardized status and validation
+class AttendanceStatus(str, Enum):
+    PRESENT = "present"
+    ABSENT = "absent"
+    LATE = "late"
+    EXCUSED = "excused"
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+class AttendanceMode(str, Enum):
+    MANUAL = "manual"
+    BIOMETRIC = "biometric"
+    QR_CODE = "qr_code"
 
-# Environment configuration
-DEV_MODE = os.getenv("APP_ENV", "development") == "development"
-SCANNER_RETRY_LIMIT = int(os.getenv("SCANNER_RETRY_LIMIT", "3"))
-SCANNER_RETRY_DELAY = int(os.getenv("SCANNER_RETRY_DELAY", "5"))
-
-router = APIRouter(prefix="/attendance", tags=["attendance"])
-
-# Global scanner instance
-scanner_instance = None
-
-class AttendanceException(HTTPException):
-    """Custom exception for attendance-related errors"""
-    def __init__(self, detail: str, status_code: int = 400):
-        super().__init__(status_code=status_code, detail=detail)
-
-# Scanner management
-@asynccontextmanager
-async def get_scanner():
-    """Context manager for scanner initialization and cleanup"""
-    global scanner_instance
-    if scanner_instance is None:
-        raise AttendanceException(detail="Scanner not initialized", status_code=400)
-    try:
-        yield scanner_instance
-    finally:
-        pass  # We're not cleaning up the scanner after each use anymore
-
-async def process_attendance_mark(
-    user_id: str,
-    check_type: str,
-    attendance_service: AttendanceService
-) -> Dict[str, Any]:
-    """Process attendance marking with proper error handling"""
-    try:
-        result = await attendance_service.mark_attendance(user_id, check_type)
-        logger.info(f"Marked {check_type} attendance for user {user_id}")
-        return result
-    except Exception as e:
-        logger.error(f"Failed to mark attendance for user {user_id}: {str(e)}")
-        raise AttendanceException(
-            detail=f"Failed to mark attendance: {str(e)}",
-            status_code=500
-        )
-
-# Route handlers
-@router.post("/initialize-scanner", response_model=Dict[str, str])
-async def initialize_scanner(
-    current_admin: User = Depends(get_current_school_admin)
-):
-    """Initialize the fingerprint scanner"""
-    global scanner_instance
-    try:
-        if DEV_MODE:
-            logger.info("Using mock fingerprint scanner (Development Mode)")
-            scanner_instance = MockFingerprint()
-        else:
-            for attempt in range(SCANNER_RETRY_LIMIT):
-                try:
-                    logger.info(f"Initializing production scanner (attempt {attempt + 1})")
-                    scanner_instance = SupremaScanner()
-                    break
-                except Exception as e:
-                    if attempt < SCANNER_RETRY_LIMIT - 1:
-                        logger.warning(f"Scanner initialization failed, retrying: {str(e)}")
-                        await asyncio.sleep(SCANNER_RETRY_DELAY)
-                    else:
-                        raise
-        return {"message": "Scanner initialized successfully"}
-    except Exception as e:
-        logger.error(f"Failed to initialize scanner: {str(e)}")
-        raise AttendanceException(detail="Failed to initialize scanner", status_code=500)
-
-@router.post("/teachers/mark", response_model=AttendanceResponse)
-async def mark_teacher_attendance_route(
-    current_teacher: User = Depends(get_current_teacher),
-    attendance_service: AttendanceService = Depends(AttendanceService)
-):
-    """Mark teacher attendance with fingerprint verification"""
-    try:
-        async with get_scanner() as scanner:
-            if DEV_MODE:
-                mock_data = await scanner.generate_mock_fingerprint_data()
-                return await attendance_service.mark_teacher_attendance(
-                    current_teacher.id,
-                    "check_in",
-                    current_teacher.school_id
-                )
+class AttendanceRequest(BaseModel):
+    """Comprehensive attendance marking request"""
+    class_id: int
+    students: List[Dict[str, Any]] = Field(
+        ..., 
+        min_items=1, 
+        max_items=100, 
+        description="List of student attendance details"
+    )
+    date: Optional[date] = Field(default_factory=date.today)
+    mode: AttendanceMode = AttendanceMode.MANUAL
+    
+    @validator('students')
+    def validate_student_data(cls, students):
+        for student in students:
+            # Ensure required fields are present
+            if 'student_id' not in student:
+                raise ValueError("Each student must have a student_id")
             
-            fingerprint_data = await process_fingerprint(scanner)
-            if not fingerprint_data:
-                raise AttendanceException(detail="Failed to capture fingerprint")
-
-            if not await attendance_service.verify_teacher_fingerprint(
-                current_teacher.id, 
-                fingerprint_data["template"]
-            ):
-                raise AttendanceException(detail="Invalid teacher fingerprint")
-            
-            current_hour = datetime.now().hour
-            check_type = "check_in" if current_hour < 12 else "check_out"
-            
-            return await attendance_service.mark_teacher_attendance(
-                current_teacher.id,
-                check_type,
-                current_teacher.school_id
-            )
-    except AttendanceException:
-        raise
-    except Exception as e:
-        logger.error(f"Error marking teacher attendance: {str(e)}")
-        raise AttendanceException(
-            detail="Failed to mark teacher attendance",
-            status_code=500
-        )
-
-@router.post("/students/mark", response_model=AttendanceResponse)
-async def mark_student_attendance_route(
-    request: AttendanceRequest,
-    current_teacher: User = Depends(get_current_teacher),
-    attendance_service: AttendanceService = Depends(AttendanceService)
-):
-    """Mark attendance for multiple students"""
-    try:
-        results = []
-        for student_id in request.student_ids:
-            result = await attendance_service.mark_student_attendance(
-                student_id, 
-                is_present=True,
-                school_id=current_teacher.school_id
-            )
-            results.append(result)
+            # Validate status if provided
+            if 'status' in student and student['status'] not in AttendanceStatus.__members__:
+                raise ValueError(f"Invalid attendance status: {student['status']}")
         
-        return {
-            "message": "Student attendance marked successfully", 
-            "results": results
-        }
-    except Exception as e:
-        logger.error(f"Error marking student attendance: {str(e)}")
-        raise AttendanceException(
-            detail="Failed to mark student attendance",
-            status_code=500
-        )
+        return students
 
-@router.get("/view/daily/{date}", response_model=Dict[str, Any])
-async def view_daily_attendance_route(
-    date: date,
-    current_admin: User = Depends(get_current_school_admin),
-    attendance_service: AttendanceService = Depends(AttendanceService)
-):
-    """View attendance records for a specific date"""
-    try:
-        return await attendance_service.get_attendance_for_period(
-            school_id=current_admin.school_id,
-            start_date=date,
-            end_date=date
-        )
-    except Exception as e:
-        logger.error(f"Error viewing daily attendance: {str(e)}")
-        raise AttendanceException(
-            detail="Failed to view daily attendance",
-            status_code=500
-        )
-
-@router.get("/view/weekly", response_model=WeeklyAttendanceResponse)
-async def view_weekly_attendance_route(
-    current_admin: User = Depends(get_current_school_admin),
-    attendance_service: AttendanceService = Depends(AttendanceService)
-):
-    """View attendance records for the current week"""
-    try:
-        today = date.today()
-        monday = today - timedelta(days=today.weekday())
-        friday = monday + timedelta(days=4)
-        return await attendance_service.get_attendance_for_period(
-            school_id=current_admin.school_id,
-            start_date=monday,
-            end_date=friday
-        )
-    except Exception as e:
-        logger.error(f"Error viewing weekly attendance: {str(e)}")
-        raise AttendanceException(
-            detail="Failed to view weekly attendance",
-            status_code=500
-        )
-
-@router.get("/view/range", response_model=PeriodAttendanceResponse)
-async def view_attendance_for_period_route(
-    start_date: date,
-    end_date: date,
-    current_admin: User = Depends(get_current_school_admin),
-    attendance_service: AttendanceService = Depends(AttendanceService)
-):
-    """View attendance records for a specific date range"""
-    if start_date > end_date:
-        raise AttendanceException(detail="Start date must be before end date")
+class AttendanceRouter:
+    def __init__(
+        self, 
+        attendance_service,
+        notification_service,
+        school_config_service
+    ):
+        self.attendance_service = attendance_service
+        self.notification_service = notification_service
+        self.school_config_service = school_config_service
     
-    try:
-        return await attendance_service.get_attendance_for_period(
-            school_id=current_admin.school_id,
-            start_date=start_date,
-            end_date=end_date
-        )
-    except Exception as e:
-        logger.error(f"Error viewing period attendance: {str(e)}")
-        raise AttendanceException(
-            detail="Failed to view period attendance",
-            status_code=500
-        )
-
-@router.get("/download/csv")
-async def download_attendance_csv(
-    start_date: date,
-    end_date: date,
-    current_admin: User = Depends(get_current_school_admin),
-    attendance_service: AttendanceService = Depends(AttendanceService)
-):
-    """Download attendance records as CSV file"""
-    if start_date > end_date:
-        raise AttendanceException(detail="Start date must be before end date")
-    
-    try:
-        attendance_data = await attendance_service.generate_class_csv(
-            school_id=current_admin.school_id,
-            start_date=start_date,
-            end_date=end_date
+    async def _validate_attendance_marking_permission(
+        self, 
+        user: User, 
+        class_id: int
+    ) -> bool:
+        """
+        Validate if user has permission to mark attendance for the given class
+        """
+        # Check if user is a teacher assigned to the class
+        is_class_teacher = await self.attendance_service.is_teacher_of_class(
+            user_id=user.id, 
+            class_id=class_id
         )
         
-        def iter_csv(data):
-            output = io.StringIO()
-            writer = csv.writer(output)
-            for row in data:
-                writer.writerow(row)
-                yield output.getvalue()
-                output.seek(0)
-                output.truncate(0)
-
-        response = StreamingResponse(
-            iter_csv(attendance_data),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": (
-                    f"attachment; "
-                    f"filename=attendance_{start_date}_to_{end_date}.csv"
+        # Admins can mark attendance for all classes
+        is_admin = user.role in ['admin', 'school_admin']
+        
+        return is_class_teacher or is_admin
+    
+    async def _process_attendance_record(
+        self, 
+        class_id: int, 
+        student_data: Dict[str, Any], 
+        marking_date: date
+    ) -> Dict[str, Any]:
+        """
+        Process individual student attendance record
+        """
+        try:
+            # Mark attendance for the student
+            attendance_record = await self.attendance_service.mark_student_attendance(
+                student_id=student_data['student_id'],
+                class_id=class_id,
+                status=student_data.get('status', AttendanceStatus.PRESENT),
+                date=marking_date,
+                notes=student_data.get('notes', '')
+            )
+            
+            # Send notifications for absences
+            if student_data.get('status') == AttendanceStatus.ABSENT:
+                await self._notify_parent_of_absence(
+                    student_id=student_data['student_id'],
+                    absence_date=marking_date,
+                    notes=student_data.get('notes', '')
                 )
-            }
-        )
-        return response
-    except Exception as e:
-        logger.error(f"Error downloading attendance CSV: {str(e)}")
-        raise AttendanceException(
-            detail="Failed to download attendance CSV",
-            status_code=500
-        )
-
-@router.get("/status", response_model=Dict[str, Any])
-async def get_scanner_status(
-    current_admin: User = Depends(get_current_school_admin)
-):
-    """Get the current status of the fingerprint scanner"""
-    global scanner_instance
-    try:
-        if scanner_instance is None:
+            
             return {
-                "status": "Not initialized",
-                "mode": "development" if DEV_MODE else "production",
+                "student_id": student_data['student_id'],
+                "status": "success",
+                "record": attendance_record
             }
-        status = await scanner_instance.get_status()
-        return {
-            "status": status,
-            "mode": "development" if DEV_MODE else "production",
-        }
-    except Exception as e:
-        logger.error(f"Error getting scanner status: {str(e)}")
-        raise AttendanceException(
-            detail="Failed to get scanner status",
-            status_code=500
+        except Exception as e:
+            return {
+                "student_id": student_data['student_id'],
+                "status": "failed",
+                "error": str(e)
+            }
+    
+    async def _notify_parent_of_absence(
+        self, 
+        student_id: int, 
+        absence_date: date, 
+        notes: Optional[str] = None
+    ):
+        """
+        Send notification to parents about student absence
+        """
+        try:
+            # Fetch student and parent details
+            student = await self.attendance_service.get_student_details(student_id)
+            
+            # Compose notification message
+            message = (
+                f"Absence Notification: {student.name} was marked absent "
+                f"on {absence_date.strftime('%Y-%m-%d')}. "
+                f"{f'Notes: {notes}' if notes else ''}"
+            )
+            
+            # Send notifications via multiple channels
+            await self.notification_service.send_notifications(
+                student_id=student_id,
+                message=message,
+                channels=['sms', 'email']
+            )
+        except Exception as e:
+            logger.error(f"Failed to send absence notification: {str(e)}")
+    
+    @router.post("/mark", response_model=Dict[str, Any])
+    async def mark_attendance(
+        self,
+        request: AttendanceRequest,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db_session)
+    ):
+        """
+        Comprehensive attendance marking endpoint
+        
+        - Supports multiple attendance modes
+        - Validates user permissions
+        - Processes individual student attendance
+        - Sends notifications for absences
+        """
+        # Validate user's permission to mark attendance
+        if not await self._validate_attendance_marking_permission(
+            user=current_user, 
+            class_id=request.class_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to mark attendance for this class"
+            )
+        
+        # Validate attendance mode is supported
+        supported_modes = await self.school_config_service.get_supported_attendance_modes(
+            school_id=current_user.school_id
         )
+        if request.mode not in supported_modes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Attendance mode {request.mode} is not supported"
+            )
+        
+        # Process attendance for each student
+        results = await asyncio.gather(
+            *[
+                self._process_attendance_record(
+                    class_id=request.class_id,
+                    student_data=student,
+                    marking_date=request.date
+                ) 
+                for student in request.students
+            ]
+        )
+        
+        return {
+            "message": "Attendance marked successfully",
+            "results": results,
+            "total_students": len(results),
+            "successful_marks": sum(
+                1 for result in results if result['status'] == 'success'
+            )
+        }
+    
+    @router.post("/upload", response_model=Dict[str, Any])
+    async def bulk_upload_attendance(
+        self,
+        file: UploadFile = File(...),
+        class_id: int = Form(...),
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db_session)
+    ):
+        """
+        Bulk attendance upload via CSV/Excel
+        
+        - Supports CSV and Excel files
+        - Validates file format and data
+        - Processes attendance in batches
+        """
+        # Validate file type
+        if file.content_type not in ['text/csv', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid file type. Please upload CSV or Excel file."
+            )
+        
+        # Read file content
+        try:
+            # Read file based on content type
+            if file.content_type == 'text/csv':
+                df = pd.read_csv(io.BytesIO(await file.read()))
+            else:
+                df = pd.read_excel(io.BytesIO(await file.read()))
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error reading file: {str(e)}"
+            )
+        
+        # Validate DataFrame columns
+        required_columns = ['student_id', 'status', 'notes']
+        if not all(col in df.columns for col in required_columns):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Missing required columns. Required: {required_columns}"
+            )
+        
+        # Convert DataFrame to list of dictionaries
+        students = df.to_dict(orient='records')
+        
+        # Create attendance request
+        attendance_request = AttendanceRequest(
+            class_id=class_id,
+            students=students,
+            date=date.today()
+        )
+        
+        # Mark attendance
+        return await self.mark_attendance(
+            request=attendance_request, 
+            current_user=current_user,
+            db=db
+        )
+    
+    @router.get("/student/{student_id}/summary")
+    async def get_student_attendance_summary(
+        self,
+        student_id: int,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db_session)
+    ):
+        """
+        Generate attendance summary for a specific student
+        
+        - Supports date range filtering
+        - Provides comprehensive attendance statistics
+        """
+        # Default to current academic term if no dates provided
+        if not start_date or not end_date:
+            academic_term = await self.attendance_service.get_current_academic_term()
+            start_date = academic_term.start_date
+            end_date = academic_term.end_date
+        
+        # Fetch attendance summary
+        summary = await self.attendance_service.get_student_attendance_summary(
+            student_id=student_id,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        return {
+            "student_id": student_id,
+            "summary": {
+                "total_days": summary.total_days,
+                "present_days": summary.present_days,
+                "absent_days": summary.absent_days,
+                "late_days": summary.late_days,
+                "attendance_percentage": summary.attendance_percentage
+            },
+            "detailed_records": summary.detailed_records
+        }
 
-# Shutdown event
-@router.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    global scanner_instance
-    if scanner_instance and not DEV_MODE:
-        await scanner_instance.cleanup()
-    logger.info("Shutdown complete")
+# Router configuration
+router = APIRouter(
+    prefix="/attendance", 
+    tags=["attendance"],
+    dependencies=[Depends(authenticate_request)]
+)

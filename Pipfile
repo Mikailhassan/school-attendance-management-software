@@ -6,8 +6,6 @@ name = "pypi"
 [packages]
 sqlalchemy = "*"
 alembic = "*"
-pymysql = "*"
-mysqlclient = "*"
 python-multipart = "*"
 bcrypt = "*"
 fastapi = {extras = ["all"], version = "*"}
