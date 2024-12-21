@@ -32,7 +32,7 @@ class Base:
 Base = declarative_base(cls=Base)
 
 # Import models
-import app.models.attendance
+import app.models.attendance_base
 import app.models.fingerprint
 import app.models.parent
 import app.models.school
@@ -40,7 +40,9 @@ import app.models.stream
 import app.models.student
 import app.models.teacher
 import app.models.user
-
+import app.models.student_attendance
+import app.models.teacher_attendance
+import app.models.student
 async def get_db():
     async with AsyncSessionLocal() as session:
         yield session

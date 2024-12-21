@@ -8,7 +8,7 @@ class Parent(TenantModel):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True)
-    school_id = Column(Integer, ForeignKey('schools.id'), nullable=False)  # Add foreign key for School
+    school_id = Column(Integer, ForeignKey('schools.id'), nullable=False)  
     name = Column(String, nullable=False)
     phone = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False)
@@ -18,7 +18,7 @@ class Parent(TenantModel):
 
     user = relationship("User", back_populates="parent_profile")
     students = relationship("Student", back_populates="parent")
-    school = relationship("School", back_populates="parents")  # Add relationship with School
+    school = relationship("School", back_populates="parents")  
 
     def __repr__(self):
         return f"<Parent(name={self.name}, email={self.email})>"

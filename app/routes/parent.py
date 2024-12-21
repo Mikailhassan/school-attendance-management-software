@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.schemas import ParentCreate, Parent, UserUpdate
+# from app.schemas.parent import ParentCreate, Parent, UserUpdate
 from app.dependencies import get_current_active_user
-from app.models.parent import Parent as ParentModel
+# from app.models.parent import Parent as ParentModel
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 

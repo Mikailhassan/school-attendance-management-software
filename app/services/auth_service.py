@@ -12,7 +12,7 @@ from app.core.logging import logger
 from app.models import User, RevokedToken
 from app.schemas import RegisterRequest, UserUpdateRequest, PasswordResetRequest
 from app.services.email_service import EmailService
-from app.services.fingerprint_service import FingerprintService
+# from app.services.fingerprint_service import FingerprintService
 
 class AuthService:
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -136,7 +136,7 @@ class AuthService:
                 detail="Email already registered" if language == 'en' else "البريد الإلكتروني مسجل بالفعل"
             )
         
-        # Validate password strength (example implementation)
+        # Validate password strength
         if len(request.password) < 8:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

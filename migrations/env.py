@@ -1,85 +1,96 @@
-import asyncio
 from logging.config import fileConfig
-
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import pool
-from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
-
 from alembic import context
+from typing import Optional, Any, Dict
 
-
-from app.models import Base
-from app.models import (
-    Parent,
-    Student,
-    Teacher,
-    Fingerprint,
-    Attendance,
-    School,
-    Stream,
-    User,
-    RevokedToken
-)
-
-# this is the Alembic Config object, which provides access to the values within the .ini file in use.
+# This is the Alembic Config object
 config = context.config
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
+# Interpret the config file for Python logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Add your model's MetaData object here for 'autogenerate' support
+# Import Base and all models
+from app.models.base import Base
+from app.models import (
+    School,
+    Class,
+    Stream,
+    TeacherAttendance,
+    StudentAttendance,
+    Fingerprint,
+    AttendanceBase,
+    User,
+    RevokedToken,
+    Parent,
+    Session,
+    Student
+)
+
 target_metadata = Base.metadata
 
-# Ensure all models are imported and their metadata is included
-for model in [Parent, Student, Teacher, Fingerprint, Attendance, School, Stream, User, RevokedToken]:
-    if not hasattr(model, '__table__'):
-        raise Exception(f"Model {model.__name__} does not have a __table__ attribute. Ensure it's properly defined as a SQLAlchemy model.")
-    if model.__table__ not in target_metadata.tables.values():
-        raise Exception(f"Model {model.__name__} is not included in Base.metadata. Ensure it inherits from Base.")
+
+
+def get_config_section(section: str, default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Retrieve configuration section with a default fallback.
+    """
+    try:
+        return {key: config.get_section(section)[key] for key in config.get_section(section)}
+    except Exception:
+        return default or {}
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode."""
+    """
+    Run migrations in 'offline' mode.
+    """
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        compare_type=True,
     )
 
     with context.begin_transaction():
         context.run_migrations()
 
-
-def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
-
+def do_run_migrations(connection: Any) -> None:
+    """
+    Helper function to run migrations in the correct context
+    """
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        compare_server_default=True,
+    )
+    
     with context.begin_transaction():
         context.run_migrations()
 
-
-async def run_async_migrations() -> None:
-    """In this scenario we need to create an Engine and associate a connection with the context."""
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+async def run_migrations_online() -> None:
+    """
+    Run migrations in 'online' mode.
+    """
+    url = config.get_main_option("sqlalchemy.url")
+    
+    # Configure the async engine
+    engine = create_async_engine(
+        url,
         poolclass=pool.NullPool,
+        pool_pre_ping=True,
+        pool_recycle=3600,
     )
 
-    async with connectable.connect() as connection:
+    async with engine.begin() as connection:
         await connection.run_sync(do_run_migrations)
 
-    await connectable.dispose()
-
-
-def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
-    asyncio.run(run_async_migrations())
-
-
+# Entry point for migrations
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online()
+    import asyncio
+    asyncio.run(run_migrations_online())

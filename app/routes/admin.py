@@ -10,11 +10,11 @@ from app.schemas import (
     FingerprintResponse,
     School as SchoolSchema,
     UserResponse, 
-    Attendance as AttendanceSchema,
+    # Attendance as AttendanceSchema,
     UserRole
 )
 from app.core.database import get_db
-from app.dependencies import get_current_admin
+from app.core.dependencies import get_current_admin
 from app.utils.email_utils import send_email
 from app.utils.sms import InfobipSMSService
 from datetime import date, datetime
