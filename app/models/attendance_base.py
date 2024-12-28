@@ -37,15 +37,37 @@ class AttendanceBase(TenantModel):
     def session_id(cls):
         return Column(Integer, ForeignKey('sessions.id'), nullable=True)
 
+    @declared_attr
+    def school_id(cls):
+        return Column(Integer, ForeignKey('schools.id'), nullable=False)
+
+    @declared_attr
+    def user_id(cls):
+        return Column(Integer, ForeignKey('users.id'), nullable=False)
+
     # Relationships
     @declared_attr
     def session(cls):
-        return relationship("Session")
+        return relationship("Session", back_populates=f"{cls.__name__.lower()}s")
 
     @declared_attr
     def school(cls):
-        return relationship("School", 
-                          back_populates=f"{cls.__name__.lower()}_attendance")
+        name = cls.__name__.lower()
+        if name == 'teacherattendance':
+            back_pop = 'teacher_attendance'
+        elif name == 'studentattendance':
+            back_pop = 'student_attendance'
+        else:
+            back_pop = f"{name}s"
+        return relationship("School", back_populates=back_pop)
 
-    def __repr__(self):
-        return f"<Attendance(date={self.date}, status={self.status})>"
+    @declared_attr
+    def user(cls):
+        name = cls.__name__.lower()
+        if name == 'teacherattendance':
+            back_pop = 'teacher_attendances'
+        elif name == 'studentattendance':
+            back_pop = 'student_attendances'
+        else:
+            back_pop = f"{name}s"
+        return relationship("User", back_populates=back_pop)

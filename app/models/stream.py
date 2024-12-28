@@ -1,4 +1,3 @@
-# stream.py
 from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship
 from .base import TenantModel
@@ -15,6 +14,7 @@ class Stream(TenantModel):
     students = relationship("Student", back_populates="stream")
     school = relationship("School", back_populates="streams")
     class_ = relationship("Class", back_populates="streams")
+    sessions = relationship("Session", back_populates="stream")  # Add this relationship
 
     def __repr__(self):
         return f"<Stream(name={self.name}, class_id={self.class_id}, school_id={self.school_id})>"

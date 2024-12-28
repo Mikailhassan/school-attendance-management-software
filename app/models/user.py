@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, Boolean, Date, DateTime, Foreign
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, declared_attr
 from .base import TenantModel
-from app.schemas.user.base import UserRole
+from app.schemas.enums import UserRole
 
 class User(TenantModel):
     __tablename__ = "users"
@@ -51,15 +51,17 @@ class User(TenantModel):
     def updated_at(cls):
         return Column(DateTime(timezone=True), onupdate=func.now())
 
-    # Relationships using declared_attr
+    # School relationship
     @declared_attr
     def school(cls):
         return relationship("School", back_populates="users")
 
+    # Fingerprint relationship
     @declared_attr
     def fingerprint(cls):
         return relationship("Fingerprint", back_populates="user", uselist=False)
 
+    # Profile relationships
     @declared_attr
     def parent_profile(cls):
         return relationship("Parent", back_populates="user", uselist=False)
@@ -72,12 +74,18 @@ class User(TenantModel):
     def student_profile(cls):
         return relationship("Student", back_populates="user", uselist=False)
 
+    # Attendance relationships - split into student and teacher attendance
     @declared_attr
-    def attendances(cls):
-        return relationship("Attendance", back_populates="user")
+    def student_attendances(cls):
+        return relationship("StudentAttendance", back_populates="user")
+
+    @declared_attr
+    def teacher_attendances(cls):
+        return relationship("TeacherAttendance", back_populates="user")
 
     def __repr__(self):
         return f"<User(id={self.id}, name={self.name}, role={self.role})>"
+
 
 class RevokedToken(TenantModel):
     __tablename__ = "revoked_tokens"
@@ -98,7 +106,6 @@ class RevokedToken(TenantModel):
     def school_id(cls):
         return Column(Integer, ForeignKey('schools.id'), nullable=False)
 
-    # Define the school relationship using declared_attr
     @declared_attr
     def school(cls):
         return relationship("School", back_populates="revoked_tokens")

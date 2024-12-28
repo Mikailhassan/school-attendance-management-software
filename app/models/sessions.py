@@ -23,15 +23,15 @@ class Session(Base):
 
     @declared_attr
     def status(cls):
-        return Column(String, default='Active')  # Example status: 'Active', 'Completed', 'Upcoming'
+        return Column(String, default='Active')
 
     @declared_attr
     def school_id(cls):
-        return Column(Integer, ForeignKey('schools.id'))  # Each session belongs to a school
+        return Column(Integer, ForeignKey('schools.id'))
 
     @declared_attr
     def stream_id(cls):
-        return Column(Integer, ForeignKey('streams.id'))  # Link to a stream (optional based on your needs)
+        return Column(Integer, ForeignKey('streams.id'))
 
     # Relationships
     @declared_attr
@@ -41,6 +41,14 @@ class Session(Base):
     @declared_attr
     def stream(cls):
         return relationship("Stream", back_populates="sessions")
+
+    @declared_attr
+    def student_attendances(cls):
+        return relationship("StudentAttendance", back_populates="session")
+
+    @declared_attr
+    def teacher_attendances(cls):
+        return relationship("TeacherAttendance", back_populates="session")
 
     def __repr__(self):
         return f"<Session(name={self.name}, start_date={self.start_date}, end_date={self.end_date}, status={self.status})>"

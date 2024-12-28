@@ -16,10 +16,22 @@ class TeacherAttendance(AttendanceBase):
     def teacher_id(cls):
         return Column(Integer, ForeignKey("teachers.id"), nullable=False)
 
+    @declared_attr
+    def session_id(cls): 
+        return Column(Integer, ForeignKey("sessions.id"), nullable=False)
+
     # Relationships
     @declared_attr
     def teacher(cls):
-        return relationship("Teacher", back_populates="attendances")
+        return relationship("Teacher", back_populates="attendances", lazy="joined")
+
+    @declared_attr
+    def user(cls):
+        return relationship("User", back_populates="teacher_attendances", lazy="joined")
+    
+    @declared_attr 
+    def session(cls):
+        return relationship("Session", back_populates="teacher_attendances", lazy="joined")
 
     def __repr__(self):
         return f"<TeacherAttendance(teacher_id={self.teacher_id})>"
