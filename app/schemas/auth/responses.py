@@ -1,3 +1,4 @@
+# app/schemas/auth/responses.py
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from app.schemas.user.role import UserRoleEnum
@@ -20,8 +21,13 @@ class UserBaseResponse(BaseModel):
 # Response for a successful user login (includes a token for authentication)
 class LoginResponse(BaseModel):
     access_token: str  # The access token generated after a successful login
+    refresh_token: str  # The refresh token for obtaining new access tokens
     token_type: str = "bearer"  # Type of the token (Bearer)
+    role: UserRoleEnum  # User's role from the token
     user: UserBaseResponse  # User details included in the response
+
+    class Config:
+        from_attributes = True
 
     class Config:
         from_attributes = True

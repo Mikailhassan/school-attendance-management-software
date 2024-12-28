@@ -1,158 +1,202 @@
+# app/schemas/__init__.py
+
 # Import enums
 from .enums import UserRole
 
-# Import authentication-related schemas
-from .auth.tokens import (
-    Token, 
-    TokenData, 
-    TokenRefreshRequest, 
-    TokenRefreshResponse, 
-    RevokedTokenResponse
-)
-from .auth.requests import (
-    RegisterRequest, 
-    LoginRequest, 
-    PasswordResetRequest, 
-    PasswordChange
-)
-
-# Import user-related schemas
-from .user.base import UserBase
-from .user.requests import (
-    UserCreate,
-    RegisterRequest,
-    UserUpdate,
-    LoginRequest,
-    PasswordChange,
-    PasswordResetRequest,
-    UserUpdateRequest
-)
-
-from .user.responses import (
-    UserProfileResponse, 
-    UserResponse, 
-   
-    RegisterResponse,
-    LoginResponse
-)
-
-# Import teacher-related schemas
-from .teacher.base import (
-    TeacherBase, 
-   
-)
-from .teacher.requests import (
-     TeacherCreate, 
-    TeacherUpdate, 
-    TeacherRegistrationRequest
-)
-from .teacher.responses import TeacherResponse
-
-# Import student-related schemas
-from .student.base import (
-    StudentBase, 
-    
-)
-from .student.requests import (
-    StudentCreate, 
-    StudentUpdate, 
-    StudentRegistrationRequest
-)
-from .student.responses import (
-    StudentResponse
-)
-
-# Import parent-related schemas
-# from .parent.base import (
-#     ParentBase, 
-#     ParentCreate, 
-#     ParentResponse, 
-#     ParentUpdate
-# )
-
-# Import school-related schemas
-from .school.base import (
-    SchoolBase, 
-    StreamBase, 
-)   
-from .school.requests import (
-    SchoolCreate, 
-    School, 
-    SchoolUpdate, 
-    StreamCreate
-)
-from .school.responses import (
-    StreamResponse
-)
-
-
-# Import attendance-related schemas
-from .attendance.base import (
-    AttendanceBase, 
-   
-)
-from .attendance.requests import (
-    AttendanceCreate, 
-    AttendanceRequest
-    
-)
-from .attendance.responses import (
-    AttendanceResponse,
-    WeeklyAttendanceResponse, 
-    PeriodAttendanceResponse, 
-    Attendance
-    
-)
-
-from .attendance.analytics import AttendanceAnalytics
-
-from app.schemas.user.role import (
-    UserRoleEnum,
-    RoleDetails,
-    RegisterResponse
-)
 # Import common schemas
 from .common.pagination import Page
 from .common.error import ErrorResponse
 
+# Import auth schemas
+from .auth.tokens import (
+    Token, 
+    TokenData, 
+    TokenRefreshRequest, 
+    TokenRefreshResponse,
+    TokenResponse
 
-# Export all imported schemas
+)
+from .auth.requests import (
+    LoginRequest,
+    RegisterRequest, 
+    PasswordResetRequest, 
+    PasswordChange
+)
+from .auth.responses import (
+    LoginResponse,
+    RegisterResponse,
+)
+
+# Import user schemas
+from .user.base import UserBase,UserBaseSchema
+from .user.requests import (
+    UserCreate,
+    UserUpdate,
+    UserUpdateRequest,
+    SchoolAdminRegistrationRequest,  # Added
+    SuperAdminRegistrationRequest    # Added
+)
+from .user.responses import (
+    UserResponse,
+    UserProfileResponse,
+    UserUpdateResponse
+)
+from .user.role import (
+    UserRoleEnum,
+    RoleDetails
+)
+
+# Import teacher schemas
+from .teacher.base import TeacherBase
+from .teacher.requests import (
+    TeacherCreate,
+    TeacherUpdate,
+    TeacherRegistrationRequest
+)
+from .teacher.responses import (
+    TeacherResponse,
+    TeacherUpdateResponse,
+    TeacherListResponse
+)
+
+# Import student schemas
+from .student.base import StudentBase
+from .student.requests import (
+    StudentCreate,
+    StudentUpdate,
+    StudentRegistrationRequest
+)
+from .student.responses import (
+    StudentBaseResponse,
+    StudentCreateResponse,
+    StudentDetailResponse,
+    StudentUpdateResponse,
+    StudentListResponse
+)
+
+# Import school schemas
+from .school.base import (
+    SchoolBase,
+    StreamBase
+)
+from .school.requests import (
+    SchoolCreateRequest,
+    SchoolUpdateRequest,
+    SchoolRegistrationRequest,   # Added
+    ClassCreateRequest,
+    ClassUpdateRequest,
+    StreamCreateRequest,
+    StreamUpdateRequest,
+    SessionCreateRequest,
+    SchoolAdminRegistrationRequest
+   
+)
+from .school.responses import (
+    SchoolResponse,
+    StreamResponse,
+    SessionResponse
+   
+)
+
+# Import parent schemas
+from .parents.requests import ParentRegistrationRequest, ParentCreate, ParentUpdate
+from .parents.responses import ParentResponse, ParentCreateResponse, ParentUpdateResponse, ParentListResponse, ParentDetailResponse
+
+# Import attendance schemas
+from .attendance.base import AttendanceBase
+from .attendance.requests import (
+    AttendanceCreate,
+    AttendanceRequest
+)
+from .attendance.responses import (
+    AttendanceResponse,
+    WeeklyAttendanceResponse,
+    PeriodAttendanceResponse
+)
+from .attendance.analytics import AttendanceAnalytics
+
+# Export all schemas
 __all__ = [
     # Enums
     'UserRole',
+    'UserRoleEnum',
     
-    # Authentication Schemas
-    'Token', 'RegisterResponse', 'LoginResponse', 'TokenData', 
-    'TokenRefreshRequest', 'TokenRefreshResponse', 'RevokedTokenResponse',
-    'RegisterRequest', 'LoginRequest', 'PasswordResetRequest', 'PasswordChange',
+    # Common schemas
+    'Page',
+    'ErrorResponse',
     
-    # User Schemas
-    'UserBase', 'UserCreate', 'UserUpdate', 'UserProfileResponse', 
-    'UserResponse', 'UserUpdateRequest',
+    # Auth schemas
+    'Token',
+    'TokenData',
+    'TokenRefreshRequest',
+    'TokenRefreshResponse',
+    'LoginRequest',
+    'RegisterRequest',
+    'PasswordResetRequest',
+    'PasswordChange',
+    'LoginResponse',
+    'RegisterResponse',
     
-    # Teacher Schemas
-    'TeacherBase', 'TeacherCreate', 'TeacherResponse', 'TeacherUpdate', 
+    # User schemas
+    'UserBase',
+    'UserCreate',
+    'UserUpdate',
+    'UserUpdateRequest',
+    'UserResponse',
+    'UserProfileResponse',
+    'UserUpdateResponse',
+    'RoleDetails',
+    'SchoolAdminRegistrationRequest',    # Added
+    'SuperAdminRegistrationRequest',     # Added
+    
+    # Teacher schemas
+    'TeacherBase',
+    'TeacherCreate',
+    'TeacherUpdate',
     'TeacherRegistrationRequest',
+    'TeacherResponse',
+    'TeacherUpdateResponse',
+    'TeacherListResponse',
     
-    # Student Schemas
-    'StudentBase', 'StudentCreate', 'StudentResponse', 'StudentUpdate', 
+    # Student schemas
+    'StudentBase',
+    'StudentCreate',
+    'StudentUpdate',
     'StudentRegistrationRequest',
+    'StudentBaseResponse',
+    'StudentCreateResponse',
+    'StudentDetailResponse',
+    'StudentUpdateResponse',
+    'StudentListResponse',
     
-    # Parent Schemas
-    'ParentBase', 'ParentCreate', 'ParentResponse', 'ParentUpdate',
+    # School schemas
+    'SchoolBase',
+    'StreamBase',
+    'SchoolCreateRequest',
+    'SchoolUpdateRequest',
+    'SchoolRegistrationRequest',    # Added
+    'StreamCreateRequest',
+    'StreamUpdateRequest',
+    'SessionCreateRequest',
+    'FormCreateRequest',
+    'SchoolResponse',
+    'StreamResponse',
+    'SessionResponse',
+    'FormResponse',
     
-    # School Schemas
-    'SchoolBase', 'SchoolCreate', 'School', 'SchoolUpdate', 
-    'StreamBase', 'StreamCreate', 'StreamResponse',
+    # Parent schemas
+    'ParentRegistrationRequest',
+    'ParentRegistrationResponse',
+    'parentResponse',
+    'parentUpdateResponse',
+    'parentcreate'
     
-    # Attendance Schemas
-    'AttendanceBase', 'AttendanceCreate', 'Attendance', 'AttendanceRequest', 
-    'AttendanceResponse', 'WeeklyAttendanceResponse', 'PeriodAttendanceResponse', 
-    'AttendanceAnalytics',
-    
-    # Common Schemas
-    'Page', 'ErrorResponse',
-    
-    # Fingerprint Schemas
-    'FingerprintBase', 'FingerprintCreate', 'FingerprintResponse'
+    # Attendance schemas
+    'AttendanceBase',
+    'AttendanceCreate',
+    'AttendanceRequest',
+    'AttendanceResponse',
+    'WeeklyAttendanceResponse',
+    'PeriodAttendanceResponse',
+    'AttendanceAnalytics'
 ]

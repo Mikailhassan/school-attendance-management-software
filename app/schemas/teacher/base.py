@@ -1,6 +1,7 @@
+# app/schemas/teacher/base.py
 from pydantic import BaseModel, validator
 from datetime import date
-from ..user.base import UserBase  # Import UserBase
+from ..user.base import UserBase
 
 class TeacherBase(UserBase):
     tsc_number: str

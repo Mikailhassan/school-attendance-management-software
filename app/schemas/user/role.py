@@ -10,7 +10,13 @@ class UserRoleEnum(str, Enum):
     TEACHER = "teacher"
     STUDENT = "student"
     PARENT = "parent"
-
+    # Configuration base class for consistent model settings
+    class BaseConfig:
+        from_attributes = True
+        json_encoders = {
+            Enum: lambda v: v.value,
+            datetime: lambda v: v.isoformat()
+        }
 class RoleDetails(BaseModel):
     id: str = Field(..., description="Unique role identifier")
     name: str = Field(..., description="Human-readable role name")

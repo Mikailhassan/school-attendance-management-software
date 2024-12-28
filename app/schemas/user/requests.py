@@ -1,3 +1,4 @@
+# app/schemas/user/requests.py
 from pydantic import BaseModel, validator
 from pydantic import BaseModel, EmailStr
 from typing import Optional
@@ -46,6 +47,22 @@ class UserUpdateRequest(BaseModel):
     address: Optional[str] = None
     role: Optional[str] = None    
 
+class SchoolAdminRegistrationRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    password: str
+    phone_number: str
+    school_id: int
+    position: Optional[str] = None
+
+class SuperAdminRegistrationRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    password: str
+    phone_number: str
+    admin_key: str  # Special key for super admin registration    
 
 
 class UserBaseSchema(BaseModel):

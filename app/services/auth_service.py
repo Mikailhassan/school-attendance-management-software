@@ -6,21 +6,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from jose import jwt, JWTError
 from passlib.context import CryptContext
+from app.services.registration_service import RegistrationService
 
-from app.core.config import settings
+from .base_service import BaseService
+from app.core.config import settings, get_jwt_settings
 from app.core.logging import logger
 from app.models import User, RevokedToken
 from app.schemas import RegisterRequest, UserUpdateRequest, PasswordResetRequest
 from app.services.email_service import EmailService
-# from app.services.fingerprint_service import FingerprintService
+from app.services.fingerprint_service import FingerprintService
 
-class AuthService:
+class AuthService(BaseService):
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
     def __init__(self, db: AsyncSession):
         self.db = db
         self.fingerprint_service = FingerprintService(db)
-        self.email_service = EmailService()
+        self._email_service = None
+        self.jwt_settings = get_jwt_settings()
+    
+    @property
+    def email_service(self) -> EmailService:
+        """Lazy load email service only when needed"""
+        if self._email_service is None:
+            self._email_service = EmailService()
+        return self._email_service
 
     async def hash_password(self, password: str) -> str:
         """
@@ -28,11 +38,11 @@ class AuthService:
         """
         return self.pwd_context.hash(password)
 
-    def verify_password(self, plain_password: str, hashed_password: str) -> bool:
+    def verify_password(self, plain_password: str, password_hash: str) -> bool:
         """
         Verify a plain text password against its hash.
         """
-        return self.pwd_context.verify(plain_password, hashed_password)
+        return self.pwd_context.verify(plain_password, password_hash)
 
     async def create_access_token(
         self, 
@@ -47,13 +57,13 @@ class AuthService:
         if expires_delta:
             expire = datetime.utcnow() + expires_delta
         else:
-            expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+            expire = datetime.utcnow() + timedelta(minutes=self.jwt_settings["access_token_expire_minutes"])
         
         to_encode.update({"exp": expire, "type": "access"})
         return jwt.encode(
             to_encode, 
-            settings.SECRET_KEY, 
-            algorithm=settings.ALGORITHM
+            self.jwt_settings["secret_key"], 
+            algorithm=self.jwt_settings["algorithm"]
         )
 
     async def create_refresh_token(
@@ -69,13 +79,13 @@ class AuthService:
         if expires_delta:
             expire = datetime.utcnow() + expires_delta
         else:
-            expire = datetime.utcnow() + timedelta(days=7)
+            expire = datetime.utcnow() + timedelta(days=self.jwt_settings["refresh_token_expire_days"])
         
         to_encode.update({"exp": expire, "type": "refresh"})
         return jwt.encode(
             to_encode, 
-            settings.SECRET_KEY, 
-            algorithm=settings.ALGORITHM
+            self.jwt_settings["secret_key"], 
+            algorithm=self.jwt_settings["algorithm"]
         )
 
     async def authenticate_user(
@@ -83,9 +93,10 @@ class AuthService:
         email: str, 
         password: str, 
         language: str = 'en'
-    ) -> Tuple[str, str, str]:
+    ) -> Dict[str, Any]:
         """
         Comprehensive user authentication with token generation.
+        Returns tokens and user information.
         """
         # Find user by email
         query = select(User).where(User.email == email)
@@ -93,7 +104,7 @@ class AuthService:
         user = result.scalar_one_or_none()
         
         # Validate user and password
-        if not user or not self.verify_password(password, user.hashed_password):
+        if not user or not self.verify_password(password, user.password_hash):
             logger.warning(f"Failed login attempt for email: {email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -116,51 +127,25 @@ class AuthService:
         )
         
         logger.info(f"User authenticated: {email}")
-        return access_token, refresh_token, user.role
+        
+        # Return complete authentication response
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "role": user.role,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "name": user.name,
+                "role": user.role,
+                "is_active": user.is_active,
+                "created_at": user.created_at,
+                "updated_at": user.updated_at
+            }
+        }
 
-    async def register_user(
-        self, 
-        request: RegisterRequest, 
-        language: str = 'en'
-    ) -> User:
-        """
-        User registration with comprehensive validation.
-        """
-        # Check if email already exists
-        existing_user_query = select(User).where(User.email == request.email)
-        existing_user = await self.db.execute(existing_user_query)
-        
-        if existing_user.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered" if language == 'en' else "البريد الإلكتروني مسجل بالفعل"
-            )
-        
-        # Validate password strength
-        if len(request.password) < 8:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Password too short" if language == 'en' else "كلمة المرور قصيرة جدًا"
-            )
-        
-        # Hash password
-        hashed_password = await self.hash_password(request.password)
-        
-        # Create new user
-        new_user = User(
-            email=request.email,
-            name=request.name,
-            hashed_password=hashed_password,
-            role=request.role,
-            is_active=True
-        )
-        
-        self.db.add(new_user)
-        await self.db.commit()
-        await self.db.refresh(new_user)
-        
-        logger.info(f"User registered: {request.email}")
-        return new_user
+
 
     async def generate_password_reset_token(self, email: str) -> str:
         """
@@ -314,8 +299,8 @@ class AuthService:
             # Decode refresh token
             payload = jwt.decode(
                 refresh_token, 
-                settings.SECRET_KEY, 
-                algorithms=[settings.ALGORITHM]
+                self.jwt_settings["secret_key"], 
+                algorithms=[self.jwt_settings["algorithm"]]
             )
             
             # Validate token type

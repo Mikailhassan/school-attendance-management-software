@@ -1,25 +1,25 @@
-from .base import UserRole, UserBase
+# app/schemas/user/__init__.py
+from .base import UserBase,UserBaseSchema
 from .requests import (
     UserCreate, 
     UserUpdate, 
     LoginRequest, 
     PasswordChange, 
-    PasswordResetRequest
+    PasswordResetRequest,
+    SchoolAdminRegistrationRequest,
+    SuperAdminRegistrationRequest
 )
 from .responses import (
     UserResponse, 
     UserProfileResponse, 
-    LoginResponse, 
+    UserUpdateResponse,
+    UserListResponse,
+    LoginResponse,
     RegisterResponse
 )
-from .role import (
-    UserRoleEnum,
-    RoleDetails,
-    RegisterResponse
-)
+from .role import UserRoleEnum, RoleDetails
 
 __all__ = [
-    'UserRole',
     'UserBase',
     'UserCreate',
     'UserUpdate',
@@ -28,6 +28,10 @@ __all__ = [
     'PasswordResetRequest',
     'UserResponse',
     'UserProfileResponse',
+    'UserUpdateResponse',
+    'UserListResponse',  
     'LoginResponse',
-    'RegisterResponse'
+    'RegisterResponse',
+    'UserRoleEnum',
+    'RoleDetails'
 ]

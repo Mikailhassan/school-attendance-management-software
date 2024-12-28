@@ -1,22 +1,25 @@
+# app/schemas/user/base.py
 from pydantic import BaseModel, EmailStr
 from datetime import date, datetime
 from typing import Optional
-from enum import Enum
+from ..enums import UserRole 
 
-# User Roles Enumeration
-class UserRole(str, Enum):
-    SUPER_ADMIN = "super_admin"
-    SCHOOL_ADMIN = "school_admin"
-    TEACHER = "teacher"
-    STUDENT = "student"
-    PARENT = "parent"
-
-# Base User Models
 class UserBase(BaseModel):
     name: str
     email: EmailStr
     phone: Optional[str] = None
-    date_of_birth: Optional[date] = None
+    profile_picture: Optional[str] = None
+    school_id: int
+
+class UserBaseSchema(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr
+    phone_number: Optional[str] = None
+    role: UserRole
+    is_active: bool = True
+    school_id: Optional[int] = None
+    profile_picture: Optional[str] = None
 
     class Config:
         from_attributes = True

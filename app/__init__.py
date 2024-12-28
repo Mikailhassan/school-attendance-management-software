@@ -64,20 +64,19 @@ async def create_system_school(db):
         # Create with all required fields
         system_school = School(
             name="System",
-            email="system@school.local",  # Required email field
-            phone="0000000000",           # Add phone if required
-            address="System Address",      # Add address if required
-            county="System County",        # Add county if required
-            postal_code="00000",          # Add postal code if required
-            class_system="System",        # Add class system if required
-            grade_range_start=1,          # Add grade range start if required
-            grade_range_end=12            # Add grade range end if required
+            email="system@school.local",
+            phone="0000000000",
+            address="System Address",
+            county="System County",
+            postal_code="00000",
+            class_system="System",
+            class_range={"start": 1, "end": 12},  # Changed to use class_range as JSON
+            extra_info={}  # Optional: add any extra info as JSON
         )
         db.add(system_school)
         await db.commit()
         logger.info("System school created successfully")
     return system_school
-
 async def create_super_admin(db):
     # First, get the system school
     stmt = select(School).filter(School.name == "System")

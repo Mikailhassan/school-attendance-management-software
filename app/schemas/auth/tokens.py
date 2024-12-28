@@ -24,3 +24,7 @@ class TokenRefreshResponse(BaseModel):
 # Response for a revoked token to indicate whether the token has been revoked or not
 class RevokedTokenResponse(BaseModel):
     revoked: bool  # Whether the token has been successfully revoked
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"

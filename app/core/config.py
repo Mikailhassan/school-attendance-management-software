@@ -1,4 +1,5 @@
 import os
+import base64
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, SecretStr, validator, EmailStr, AnyHttpUrl, constr
 from typing import Optional, List, Dict, Set
@@ -14,7 +15,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = Field(..., env="DATABASE_URL")
     
     # Authentication Settings
-    SECRET_KEY: SecretStr = Field(..., env="SECRET_KEY")
+    SECRET_KEY: str = Field(..., env="SECRET_KEY")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, env="REFRESH_TOKEN_EXPIRE_DAYS")
@@ -30,8 +31,9 @@ class Settings(BaseSettings):
     # Email Settings
     SMTP_SERVER: Optional[str] = Field(default=None, env="SMTP_SERVER")
     SMTP_PORT: Optional[int] = Field(default=None, env="SMTP_PORT")
-    SMTP_USERNAME: Optional[EmailStr] = Field(default=None, env="SMTP_USERNAME")
-    SMTP_PASSWORD: Optional[SecretStr] = Field(default=None, env="SMTP_PASSWORD")
+    EMAIL_USERNAME: Optional[str] = Field(default=None, env="EMAIL_USERNAME")
+    EMAIL_PASSWORD: Optional[str] = Field(default=None, env="EMAIL_PASSWORD")
+    EMAIL_FROM: Optional[str] = Field(default=None, env="EMAIL_FROM")
     
     # Fingerprint Scanner Settings
     SCANNER_TIMEOUT: int = Field(default=10, env="SCANNER_TIMEOUT")
@@ -43,15 +45,15 @@ class Settings(BaseSettings):
 
     # Admin Settings
     SUPER_ADMIN_EMAIL: EmailStr = Field(..., env="SUPER_ADMIN_EMAIL")
-    SUPER_ADMIN_PASSWORD: SecretStr = Field(..., env="SUPER_ADMIN_PASSWORD")
+    SUPER_ADMIN_PASSWORD: str = Field(..., env="SUPER_ADMIN_PASSWORD")
 
     # SMS Settings
     SMS_PROVIDER: str = Field(default="INFOBIP", env="SMS_PROVIDER")
     SMS_ENABLED: bool = Field(default=True, env="SMS_ENABLED")
     
-    # Infobip Settings - Updated to handle URL validation
+    # Infobip Settings
     INFOBIP_BASE_URL: str = Field(..., env="INFOBIP_BASE_URL")
-    INFOBIP_API_KEY: SecretStr = Field(..., env="INFOBIP_API_KEY")
+    INFOBIP_API_KEY: str = Field(..., env="INFOBIP_API_KEY")
     INFOBIP_SENDER_ID: str = Field(default="School", env="INFOBIP_SENDER_ID")
     
     # SMS Rate Limiting
@@ -70,7 +72,13 @@ class Settings(BaseSettings):
         env="SMS_TEMPLATES"
     )
 
-    # Validators
+    @validator('SECRET_KEY')
+    def validate_secret_key(cls, v: str) -> str:
+        if len(v) < 32:
+            from hashlib import sha256
+            v = sha256(v.encode()).hexdigest()
+        return base64.b64encode(v.encode()).decode()
+
     @validator('ALLOWED_ORIGINS', pre=True)
     def parse_allowed_origins(cls, v):
         if isinstance(v, str):
@@ -101,17 +109,17 @@ class Settings(BaseSettings):
 
     @validator('INFOBIP_BASE_URL')
     def validate_infobip_url(cls, v: str) -> str:
-        # If URL doesn't start with http:// or https://, prepend https://
         if not v.startswith(('http://', 'https://')):
             v = f'https://{v}'
-        
-        # Validate the URL format
         try:
             from pydantic import AnyHttpUrl
             AnyHttpUrl(v)
             return v
         except Exception as e:
             raise ValueError(f"Invalid URL format: {v}. Please provide a valid URL.")
+
+    def get_jwt_key(self) -> str:
+        return self.SECRET_KEY
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -132,6 +140,14 @@ def get_token_expires_delta(minutes: Optional[int] = None) -> timedelta:
 def get_database_url() -> str:
     return settings.DATABASE_URL
 
+def get_jwt_settings() -> dict:
+    return {
+        "secret_key": settings.get_jwt_key(),
+        "algorithm": settings.ALGORITHM,
+        "access_token_expire_minutes": settings.ACCESS_TOKEN_EXPIRE_MINUTES,
+        "refresh_token_expire_days": settings.REFRESH_TOKEN_EXPIRE_DAYS
+    }
+
 def get_fingerprint_settings() -> dict:
     return {
         "timeout": settings.SCANNER_TIMEOUT,
@@ -149,12 +165,21 @@ def get_logging_config() -> Dict[str, Optional[str]]:
         "log_file": settings.LOG_FILE
     }
 
+def get_email_settings() -> dict:
+    return {
+        "smtp_server": settings.SMTP_SERVER,
+        "smtp_port": settings.SMTP_PORT,
+        "username": settings.EMAIL_USERNAME,
+        "password": settings.EMAIL_PASSWORD,
+        "from_email": settings.EMAIL_FROM
+    }
+
 def get_sms_settings() -> dict:
     return {
         "provider": settings.SMS_PROVIDER,
         "enabled": settings.SMS_ENABLED,
         "base_url": settings.INFOBIP_BASE_URL,
-        "api_key": settings.INFOBIP_API_KEY.get_secret_value(),
+        "api_key": settings.INFOBIP_API_KEY,
         "sender_id": settings.INFOBIP_SENDER_ID,
         "rate_limits": {
             "per_minute": settings.SMS_RATE_LIMIT_PER_MINUTE,

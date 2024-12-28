@@ -4,4 +4,12 @@ from .requests import (
     StudentUpdate,
     StudentRegistrationRequest
 )
-from .responses import StudentResponse
+from .responses import (
+    StudentBaseResponse,
+    StudentCreateResponse,
+    StudentDetailResponse,
+    StudentUpdateResponse,
+    StudentListResponse,
+    AttendanceSummary,
+    StudentAttendanceSummary
+)

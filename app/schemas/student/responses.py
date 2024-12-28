@@ -1,40 +1,65 @@
+# schemas/student/responses.py
 from pydantic import BaseModel, EmailStr
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, List, Dict
+from ..user.base import UserBase
 
-# Base Student Response (common fields for all responses)
-class StudentBaseResponse(BaseModel):
-    id: int  # Unique ID of the student
-    name: str  # Full name of the student
-    email: EmailStr  # Email address
-    phone: Optional[str] = None  # Optional phone number
-    form: str  # Form the student belongs to (e.g., "Form 1")
-    stream: Optional[str] = None  # Stream the student belongs to (e.g., "Form 1A")
-    date_of_birth: Optional[date] = None  # Optional date of birth
-    admission_number: str  # Unique admission number for the student
-    profile_picture: Optional[str] = None  # Optional profile picture URL
-    school_id: int  # ID of the school the student belongs to
+class StudentBaseResponse(UserBase):
+    id: int
+    form: str
+    stream: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    admission_number: str
+
+    class Config:
+        from_attributes = True
+class StudentCreateResponse(StudentBaseResponse):
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+class StudentDetailResponse(StudentBaseResponse):
+    pass
+
+class StudentUpdateResponse(StudentBaseResponse):
+    updated_at: datetime
+
+class StudentListResponse(BaseModel):
+    students: List[StudentBaseResponse]
+    total_count: int
 
     class Config:
         from_attributes = True
 
-# Response for a newly created student
-class StudentCreateResponse(StudentBaseResponse):
-    created_at: datetime  # Timestamp when the student was created
-    updated_at: Optional[datetime] = None  # Timestamp of last update
+class AttendanceSummary(BaseModel):
+    total_days: int
+    present_days: int
+    absent_days: int
+    attendance_percentage: float
+    monthly_summary: Dict[str, float]
+    latest_attendance: Optional[datetime] = None
 
-# Response for student details (after fetching)
+    class Config:
+        from_attributes = True
+
 class StudentDetailResponse(StudentBaseResponse):
-    pass  # This inherits from StudentBaseResponse to include common fields
+    form: str
+    stream: Optional[str] = None
+    attendance_records: List[dict] = []  # List of attendance records
+    attendance_summary: AttendanceSummary
+    parent_info: Optional[dict] = None   # Basic parent information if available
+    
+    class Config:
+        from_attributes = True
 
-# Response for student update (returning updated details)
-class StudentUpdateResponse(StudentBaseResponse):
-    updated_at: datetime  # Timestamp of when the student was updated
-
-# Response for a list of students (used when fetching multiple students)
-class StudentListResponse(BaseModel):
-    students: list[StudentBaseResponse]  # List of student objects
-    total_count: int  # Total number of students (useful for pagination)
-
+class StudentAttendanceSummary(BaseModel):
+    student_id: int
+    student_name: str
+    admission_number: str
+    form: str
+    stream: Optional[str] = None
+    summary: AttendanceSummary
+    term_attendance: Dict[str, float] = {}  # Term-wise attendance percentage
+    recent_absences: List[date] = []        # Recent absence dates
+    
     class Config:
         from_attributes = True
