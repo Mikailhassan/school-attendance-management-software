@@ -3,18 +3,27 @@ from typing import Optional, List
 from fastapi import HTTPException, status, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from app.schemas.student import StudentUpdate
+from sqlalchemy.orm import Session,joinedload
 
-from app.models import User, School
+from app.models import User, School, Student,Parent
 from app.schemas import (
     SchoolRegistrationRequest,
     SchoolAdminRegistrationRequest,
     TeacherRegistrationRequest,
     StudentRegistrationRequest,
-    ParentRegistrationRequest
+    ParentRegistrationRequest,
+    ParentCreate,
+    ParentUpdate
+    
 )
-from app.core.security import get_password_hash
+from app.core.security import get_password_hash,generate_temporary_password
 from app.core.logging import logger
 from .base_service import BaseService
+from app.utils.email_utils import send_email
+from app.core.logging import logging
+
+logger = logging.getLogger(__name__)
 
 class RegistrationService(BaseService):
     def __init__(self, db: AsyncSession):
@@ -187,3 +196,258 @@ class RegistrationService(BaseService):
         # Implementation for saving image to storage
         # This is a placeholder - implement actual file storage logic
         return f"/profile_images/{image.filename}"
+    
+
+async def register_student(
+    self,
+    request: StudentRegistrationRequest,
+    school_id: int,
+    created_by: int
+) -> Student:
+    """Register a new student"""
+    # Check if student with same admission number exists in the school
+    query = select(Student).where(
+        Student.admission_number == request.admission_number,
+        Student.school_id == school_id
+    )
+    result = await self.db.execute(query)
+    if result.scalar_one_or_none():
+        raise ValueError("Student with this admission number already exists")
+
+    # Create user account for student
+    user = User(
+        name=request.name,
+        email=request.email,
+        password_hash=get_password_hash(request.password),
+        role="student",
+        school_id=school_id,
+        created_by=created_by,
+        created_at=datetime.utcnow()
+    )
+    self.db.add(user)
+    await self.db.flush()  # To get the user.id
+
+    # Create student record
+    student = Student(
+        name=request.name,
+        admission_number=request.admission_number,
+        date_of_birth=request.date_of_birth,
+        class_id=request.class_id,
+        stream_id=request.stream_id,
+        user_id=user.id,
+        parent_id=request.parent_id,
+        school_id=school_id,
+        created_by=created_by
+    )
+    
+    self.db.add(student)
+    await self.db.commit()
+    await self.db.refresh(student)
+    
+    logger.info(f"New student registered: {student.name} ({student.admission_number})")
+    return student
+
+async def list_students(
+    self,
+    school_id: int,
+    class_id: Optional[int] = None,
+    stream_id: Optional[int] = None,
+    page: int = 1,
+    limit: int = 50
+) -> tuple[List[Student], int]:
+    """List students with filtering and pagination"""
+    query = select(Student).where(Student.school_id == school_id)
+    
+    if class_id:
+        query = query.where(Student.class_id == class_id)
+    if stream_id:
+        query = query.where(Student.stream_id == stream_id)
+
+    # Get total count
+    count_query = select(func.count()).select_from(query.subquery())
+    total_count = await self.db.scalar(count_query)
+
+    # Add pagination
+    query = query.offset((page - 1) * limit).limit(limit)
+    result = await self.db.execute(query)
+    students = result.scalars().all()
+    
+    return students, total_count
+
+async def update_student(
+    self,
+    student_id: int,
+    update_data: StudentUpdate,
+    school_id: int,
+    updated_by: int
+) -> Student:
+    """Update student information"""
+    student = await self.get_student(student_id)
+    if not student:
+        raise ValueError("Student not found")
+
+    if student.school_id != school_id:
+        raise ValueError("Student does not belong to your school")
+
+    # Update student fields
+    for field, value in update_data.dict(exclude_unset=True).items():
+        setattr(student, field, value)
+
+    student.updated_by = updated_by
+    student.updated_at = datetime.utcnow()
+
+    await self.db.commit()
+    await self.db.refresh(student)
+    
+    logger.info(f"Student updated: {student.name} ({student.admission_number})")
+    return student
+
+class ParentRegistrationService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    async def create_parent_account(self, parent_data: ParentCreate) -> Parent:
+        """Create a new parent account if one doesn't exist"""
+        # Check if parent already exists with this email
+        existing_user = await self.db.execute(
+            select(User).where(User.email == parent_data.email)
+        )
+        existing_user = existing_user.scalar_one_or_none()
+        
+        if existing_user:
+            raise HTTPException(
+                status_code=400,
+                detail="An account with this email already exists"
+            )
+
+        # Create new user account
+        temp_password = generate_temporary_password()
+        user = User(
+            email=parent_data.email,
+            password_hash=get_password_hash(temp_password),
+            role="parent",
+            is_active=True,
+            name=parent_data.name
+        )
+        self.db.add(user)
+        await self.db.flush()
+
+        # Create parent profile
+        parent = Parent(
+            name=parent_data.name,
+            email=parent_data.email,
+            phone=parent_data.phone,
+            address=parent_data.address,
+            school_id=parent_data.school_id,
+            user_id=user.id
+        )
+        self.db.add(parent)
+        await self.db.commit()
+        await self.db.refresh(parent)
+
+        # Send welcome email with credentials
+        await self.send_welcome_email(parent.email, temp_password)
+        
+        return parent
+
+    async def generate_activation_link(self, parent_id: int) -> str:
+        """Generate a secure activation link for parent account"""
+        token_data = {
+            "parent_id": parent_id,
+            "exp": datetime.utcnow() + settings.ACTIVATION_TOKEN_EXPIRE_MINUTES,
+            "type": "parent_activation"
+        }
+        
+        token = jwt.encode(
+            token_data,
+            settings.SECRET_KEY,
+            algorithm=settings.ALGORITHM
+        )
+        
+        return f"{settings.FRONTEND_URL}/parent/activate?token={token}"
+
+    async def send_welcome_email(self, email: str, temp_password: str):
+        """Send welcome email to parent with temporary credentials"""
+        subject = "Welcome to School Management System - Parent Account"
+        body = f"""
+        Dear Parent,
+
+        Welcome to the School Management System. An account has been created for you to track your child's attendance and academic progress.
+
+        Your login credentials:
+        Email: {email}
+        Temporary Password: {temp_password}
+
+        Please log in and change your password immediately for security purposes.
+
+        Best regards,
+        School Management Team
+        """
+        
+        await send_email(
+            recipient_email=email,
+            subject=subject,
+            body=body
+        )
+
+    async def resend_credentials(self, parent_email: str):
+        """Resend credentials to existing parent"""
+        # Find parent account
+        parent = await self.db.execute(
+            select(Parent).join(User).where(Parent.email == parent_email)
+        )
+        parent = parent.scalar_one_or_none()
+        
+        if not parent:
+            raise HTTPException(
+                status_code=404,
+                detail="Parent account not found"
+            )
+
+        # Generate new temporary password
+        temp_password = generate_temporary_password()
+        
+        # Update password in database
+        parent.user.password_hash = get_password_hash(temp_password)
+        await self.db.commit()
+
+        # Send new credentials
+        await self.send_welcome_email(parent_email, temp_password)
+        
+        return {"message": "New credentials sent successfully"}
+
+    async def get_children(self, parent_id: int):
+        """Get all children associated with a parent"""
+        children = await self.db.execute(
+            select(Student)
+            .where(Student.parent_id == parent_id)
+        )
+        return children.scalars().all()
+
+    async def verify_parent_access(self, parent_id: int, student_id: int) -> bool:
+        """Verify if a parent has access to a student's information"""
+        student = await self.db.execute(
+            select(Student)
+            .where(
+                Student.id == student_id,
+                Student.parent_id == parent_id
+            )
+        )
+        return bool(student.scalar_one_or_none())
+    
+    async def update_parent_profile(self, parent_id: int, update_data: ParentUpdate) -> Parent:
+        """Update parent profile information"""
+        parent = await self.db.get(Parent, parent_id)
+        if not parent:
+            raise HTTPException(
+                status_code=404,
+                detail="Parent account not found"
+            )
+
+        # Update only the fields that have been set
+        for key, value in update_data.dict(exclude_unset=True).items():
+            setattr(parent, key, value)
+
+        await self.db.commit()
+        await self.db.refresh(parent)
+        return parent

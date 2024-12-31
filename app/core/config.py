@@ -1,3 +1,4 @@
+# app/core/config.py
 import os
 import base64
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,6 +14,8 @@ class Settings(BaseSettings):
     
     # Database Settings
     DATABASE_URL: str = Field(..., env="DATABASE_URL")
+
+    PRODUCTION: bool = Field(default=False, env="PRODUCTION")
     
     # Authentication Settings
     SECRET_KEY: str = Field(..., env="SECRET_KEY")

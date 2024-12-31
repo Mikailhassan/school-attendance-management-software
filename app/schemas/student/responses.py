@@ -4,12 +4,14 @@ from datetime import date, datetime
 from typing import Optional, List, Dict
 from ..user.base import UserBase
 
-class StudentBaseResponse(UserBase):
+class StudentBaseResponse(BaseModel):
     id: int
-    form: str
-    stream: Optional[str] = None
-    date_of_birth: Optional[date] = None
+    name: str
     admission_number: str
+    class_id: int
+    stream_id: Optional[int]
+    school_id: int
+    created_at: datetime
 
     class Config:
         from_attributes = True

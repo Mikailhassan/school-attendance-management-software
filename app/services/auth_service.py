@@ -1,342 +1,432 @@
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Tuple
-
-from fastapi import HTTPException, status
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any, Tuple
+from fastapi import HTTPException, status, Response, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, and_
 from jose import jwt, JWTError
 from passlib.context import CryptContext
-from app.services.registration_service import RegistrationService
-
-from .base_service import BaseService
-from app.core.config import settings, get_jwt_settings
-from app.core.logging import logger
+import uuid
 from app.models import User, RevokedToken
-from app.schemas import RegisterRequest, UserUpdateRequest, PasswordResetRequest
-from app.services.email_service import EmailService
-from app.services.fingerprint_service import FingerprintService
+from app.core.logging import logger
+from app.core.config import get_jwt_settings
 
-class AuthService(BaseService):
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def set_auth_cookies(
+    response: Response,
+    request: Request,
+    access_token: str,
+    refresh_token: str,
+    access_token_expire_minutes: int,
+    refresh_token_expire_days: int
+) -> None:
+    """Set authentication cookies with proper settings"""
+    secure = request.url.scheme == "https"
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {access_token}",
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=access_token_expire_minutes * 60,
+        expires=datetime.now(timezone.utc) + timedelta(minutes=access_token_expire_minutes)
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=f"Bearer {refresh_token}",
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=refresh_token_expire_days * 24 * 60 * 60,
+        expires=datetime.now(timezone.utc) + timedelta(days=refresh_token_expire_days)
+    )
 
-    def __init__(self, db: AsyncSession):
-        self.db = db
-        self.fingerprint_service = FingerprintService(db)
-        self._email_service = None
-        self.jwt_settings = get_jwt_settings()
+def clear_auth_cookies(response: Response) -> None:
+    """Clear authentication cookies"""
+    response.delete_cookie(key="access_token")
+    response.delete_cookie(key="refresh_token")
+
+class AuthService:
+    """Service for handling authentication and user management"""
     
-    @property
-    def email_service(self) -> EmailService:
-        """Lazy load email service only when needed"""
-        if self._email_service is None:
-            self._email_service = EmailService()
-        return self._email_service
+    def __init__(self, db: AsyncSession):
+        """Initialize auth service with database session and settings"""
+        self.db = db
+        self.jwt_settings = get_jwt_settings()
+        self.secret_key = self.jwt_settings["secret_key"]
+        self.algorithm = self.jwt_settings["algorithm"]
+        self.access_token_expire_minutes = self.jwt_settings["access_token_expire_minutes"]
+        self.refresh_token_expire_days = self.jwt_settings["refresh_token_expire_days"]
+        
+        # Configure password hashing
+        self.pwd_context = CryptContext(
+            schemes=["bcrypt"],
+            deprecated="auto",
+            bcrypt__rounds=12
+        )
 
-    async def hash_password(self, password: str) -> str:
-        """
-        Securely hash a password.
-        """
+    def get_password_hash(self, password: str) -> str:
+        """Generate password hash"""
         return self.pwd_context.hash(password)
 
-    def verify_password(self, plain_password: str, password_hash: str) -> bool:
-        """
-        Verify a plain text password against its hash.
-        """
-        return self.pwd_context.verify(plain_password, password_hash)
-
-    async def create_access_token(
-        self, 
-        data: dict, 
-        expires_delta: Optional[timedelta] = None
-    ) -> str:
-        """
-        Create a JWT access token with optional expiration.
-        """
-        to_encode = data.copy()
-        
-        if expires_delta:
-            expire = datetime.utcnow() + expires_delta
-        else:
-            expire = datetime.utcnow() + timedelta(minutes=self.jwt_settings["access_token_expire_minutes"])
-        
-        to_encode.update({"exp": expire, "type": "access"})
-        return jwt.encode(
-            to_encode, 
-            self.jwt_settings["secret_key"], 
-            algorithm=self.jwt_settings["algorithm"]
-        )
-
-    async def create_refresh_token(
-        self, 
-        data: dict, 
-        expires_delta: Optional[timedelta] = None
-    ) -> str:
-        """
-        Create a refresh token with optional expiration.
-        """
-        to_encode = data.copy()
-        
-        if expires_delta:
-            expire = datetime.utcnow() + expires_delta
-        else:
-            expire = datetime.utcnow() + timedelta(days=self.jwt_settings["refresh_token_expire_days"])
-        
-        to_encode.update({"exp": expire, "type": "refresh"})
-        return jwt.encode(
-            to_encode, 
-            self.jwt_settings["secret_key"], 
-            algorithm=self.jwt_settings["algorithm"]
-        )
-
-    async def authenticate_user(
-        self, 
-        email: str, 
-        password: str, 
-        language: str = 'en'
-    ) -> Dict[str, Any]:
-        """
-        Comprehensive user authentication with token generation.
-        Returns tokens and user information.
-        """
-        # Find user by email
-        query = select(User).where(User.email == email)
-        result = await self.db.execute(query)
-        user = result.scalar_one_or_none()
-        
-        # Validate user and password
-        if not user or not self.verify_password(password, user.password_hash):
-            logger.warning(f"Failed login attempt for email: {email}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials" if language == 'en' else "بيانات اعتماد غير صالحة"
-            )
-        
-        # Check user account status
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is inactive" if language == 'en' else "الحساب غير نشط"
-            )
-        
-        # Generate tokens
-        access_token = await self.create_access_token(
-            data={"sub": str(user.id), "role": user.role}
-        )
-        refresh_token = await self.create_refresh_token(
-            data={"sub": str(user.id), "role": user.role}
-        )
-        
-        logger.info(f"User authenticated: {email}")
-        
-        # Return complete authentication response
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-            "role": user.role,
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "name": user.name,
-                "role": user.role,
-                "is_active": user.is_active,
-                "created_at": user.created_at,
-                "updated_at": user.updated_at
-            }
-        }
-
-
-
-    async def generate_password_reset_token(self, email: str) -> str:
-        """
-        Generate a secure password reset token.
-        """
-        # Find user by email
-        query = select(User).where(User.email == email)
-        result = await self.db.execute(query)
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
-        
-        # Generate reset token
-        reset_token = await self.create_access_token(
-            data={"sub": str(user.id), "type": "password_reset"},
-            expires_delta=timedelta(hours=1)
-        )
-        
-        # Send reset email
-        await self.email_service.send_password_reset_email(
-            user.email, 
-            reset_token
-        )
-        
-        logger.info(f"Password reset token generated for: {email}")
-        return reset_token
-
-    async def reset_password(
-        self, 
-        reset_token: str, 
-        new_password: str, 
-        language: str = 'en'
-    ) -> bool:
-        """
-        Reset user password using a valid reset token.
-        """
+    async def verify_password(self, plain_password: str, hashed_password: str) -> bool:
+        """Verify password against hash"""
         try:
-            # Decode and validate token
-            payload = jwt.decode(
-                reset_token, 
-                settings.SECRET_KEY, 
-                algorithms=[settings.ALGORITHM]
-            )
-            
-            # Validate token type
-            if payload.get("type") != "password_reset":
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid reset token"
-                )
-            
-            user_id = int(payload.get("sub"))
-            
-            # Find user
+            return self.pwd_context.verify(plain_password, hashed_password)
+        except Exception as e:
+            logger.error(f"Password verification error: {str(e)}")
+            return False
+
+    async def get_user_by_email(self, email: str) -> Optional[User]:
+        """Retrieve user by email"""
+        try:
+            query = select(User).where(User.email == email)
+            result = await self.db.execute(query)
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Error retrieving user by email: {str(e)}")
+            return None
+
+    async def get_user_by_id(self, user_id: int) -> Optional[User]:
+        """Retrieve user by ID"""
+        try:
             query = select(User).where(User.id == user_id)
             result = await self.db.execute(query)
-            user = result.scalar_one_or_none()
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Error retrieving user by ID: {str(e)}")
+            return None
+
+    async def create_access_token(
+        self,
+        data: Dict[str, Any],
+        expires_delta: Optional[timedelta] = None
+    ) -> str:
+        """Create JWT access token"""
+        try:
+            to_encode = data.copy()
+            expire = datetime.now(timezone.utc) + (
+                expires_delta if expires_delta
+                else timedelta(minutes=self.access_token_expire_minutes)
+            )
+            to_encode.update({
+                "exp": expire,
+                "type": "access",
+                "jti": str(uuid.uuid4())
+            })
+            return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+        except Exception as e:
+            logger.error(f"Error creating access token: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not create access token"
+            )
+
+    async def create_refresh_token(self, data: Dict[str, Any]) -> str:
+        """Create JWT refresh token"""
+        try:
+            to_encode = data.copy()
+            expire = datetime.now(timezone.utc) + timedelta(days=self.refresh_token_expire_days)
+            to_encode.update({
+                "exp": expire,
+                "type": "refresh",
+                "jti": str(uuid.uuid4())
+            })
+            return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
+        except Exception as e:
+            logger.error(f"Error creating refresh token: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not create refresh token"
+            )
+
+    async def verify_token(self, token: str) -> Dict[str, Any]:
+        """Verify and decode JWT token with comprehensive error handling"""
+        try:
+            payload = jwt.decode(
+                token,
+                self.secret_key,
+                algorithms=[self.algorithm]
+            )
+            
+            # Validate token claims
+            token_type = payload.get("type")
+            exp = payload.get("exp")
+            sub = payload.get("sub")
+            
+            if not all([token_type, exp, sub]):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token format"
+                )
+                
+            # Check expiration
+            exp_datetime = datetime.fromtimestamp(exp, tz=timezone.utc)
+            if exp_datetime < datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has expired"
+                )
+                
+            return payload
+            
+        except jwt.ExpiredSignatureError:
+            logger.warning("Token has expired")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has expired"
+            )
+        except jwt.JWTClaimsError:
+            logger.error("Invalid token claims")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token claims"
+            )
+        except JWTError as e:
+            logger.error(f"Token verification error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        except Exception as e:
+            logger.error(f"Unexpected token verification error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal server error"
+            )
+
+    async def revoke_token(self, token: str) -> bool:
+        """Revoke a JWT token by storing its JTI"""
+        try:
+            payload = await self.verify_token(token)
+            jti = payload.get('jti')
+            
+            if not jti:
+                logger.error("Token does not contain JTI claim")
+                return False
+                
+            revoked_token = RevokedToken(
+                jti=jti,
+                expiration=datetime.fromtimestamp(payload['exp'], tz=timezone.utc)
+            )
+            self.db.add(revoked_token)
+            await self.db.commit()
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error revoking token: {str(e)}")
+            await self.db.rollback()
+            return False
+
+    async def check_token_revocation(self, token: str) -> bool:
+        """Check if token has been revoked using JTI"""
+        try:
+            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            jti = payload.get('jti')
+            
+            if not jti:
+                logger.warning("Token does not contain JTI claim")
+                return False
+            
+            query = select(RevokedToken).where(
+                and_(
+                    RevokedToken.jti == jti,
+                    RevokedToken.expiration > datetime.now(timezone.utc)
+                )
+            )
+            result = await self.db.execute(query)
+            return result.scalar_one_or_none() is not None
+            
+        except Exception as e:
+            logger.error(f"Token revocation check error: {str(e)}")
+            return False
+
+    async def refresh_tokens(
+        self,
+        refresh_token: str,
+        response: Response,
+        request: Request
+    ) -> Dict[str, Any]:
+        """Refresh access and refresh tokens"""
+        try:
+            payload = await self.verify_token(refresh_token)
+            
+            if payload.get("type") != "refresh":
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token type"
+                )
+
+            if await self.check_token_revocation(refresh_token):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has been revoked"
+                )
+
+            user_id = int(payload["sub"])
+            user = await self.get_user_by_id(user_id)
+            
+            if not user or not user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User is inactive or does not exist"
+                )
+
+            # Create new token data
+            token_data = {
+                "sub": str(user.id),
+                "email": user.email,
+                "role": user.role,
+                "school_id": str(user.school_id) if user.school_id else None
+            }
+
+            new_access_token = await self.create_access_token(token_data)
+            new_refresh_token = await self.create_refresh_token(token_data)
+
+            # Revoke old refresh token
+            await self.revoke_token(refresh_token)
+
+            # Set new cookies
+            set_auth_cookies(
+                response,
+                request,
+                new_access_token,
+                new_refresh_token,
+                self.access_token_expire_minutes,
+                self.refresh_token_expire_days
+            )
+
+            return {
+                "access_token": new_access_token,
+                "refresh_token": new_refresh_token
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Token refresh error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not refresh tokens"
+            )
+
+    async def authenticate_user(
+        self,
+        email: str,
+        password: str,
+        response: Response,
+        request: Request,
+        language: str = 'en'
+    ) -> Dict[str, Any]:
+        """Authenticate user and generate tokens"""
+        try:
+            user = await self.get_user_by_email(email)
+
+            if not user:
+                logger.warning(f"Authentication attempt for non-existent user: {email}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid credentials" if language == 'en' else "بيانات اعتماد غير صالحة"
+                )
+
+            if not await self.verify_password(password, user.password_hash):
+                logger.warning(f"Failed authentication attempt for user: {email}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid credentials" if language == 'en' else "بيانات اعتماد غير صالحة"
+                )
+
+            if not user.is_active:
+                logger.warning(f"Authentication attempt for inactive user: {email}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account is inactive" if language == 'en' else "الحساب غير نشط"
+                )
+
+            token_data = {
+                "sub": str(user.id),
+                "email": user.email,
+                "role": user.role,
+                "school_id": str(user.school_id) if user.school_id else None
+            }
+
+            access_token = await self.create_access_token(token_data)
+            refresh_token = await self.create_refresh_token(token_data)
+
+            # Set authentication cookies
+            set_auth_cookies(
+                response,
+                request,
+                access_token,
+                refresh_token,
+                self.access_token_expire_minutes,
+                self.refresh_token_expire_days
+            )
+            
+            logger.info(f"User authenticated successfully: {email}")
+            
+            return {
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "name": user.name,
+                    "role": user.role,
+                    "school_id": user.school_id,
+                    "is_active": user.is_active,
+                    "created_at": user.created_at,
+                    "updated_at": user.updated_at
+                },
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "role": user.role
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Authentication error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Authentication failed" if language == 'en' else "فشل المصادقة"
+            )
+
+    async def get_current_user(self, token: str) -> Optional[User]:
+        """Verify token and return current user"""
+        try:
+            payload = await self.verify_token(token)
+            
+            if not payload or "sub" not in payload:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token payload"
+                )
+
+            if await self.check_token_revocation(token):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has been revoked"
+                )
+
+            user_id = int(payload["sub"])
+            user = await self.get_user_by_id(user_id)
             
             if not user:
                 raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
+                    status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="User not found"
                 )
-            
-            # Validate new password
-            if len(new_password) < 8:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Password too short" if language == 'en' else "كلمة المرور قصيرة جدًا"
-                )
-            
-            # Hash and update password
-            hashed_password = await self.hash_password(new_password)
-            user.hashed_password = hashed_password
-            
-            await self.db.commit()
-            
-            logger.info(f"Password reset successful for user ID: {user_id}")
-            return True
-        
-        except JWTError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired reset token"
-            )
 
-    async def update_user_profile(
-        self, 
-        user_id: int, 
-        update_request: UserUpdateRequest
-    ) -> User:
-        """
-        Update user profile information.
-        """
-        # Find user
-        query = select(User).where(User.id == user_id)
-        result = await self.db.execute(query)
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
-        
-        # Update fields if provided
-        if update_request.name:
-            user.name = update_request.name
-        
-        if update_request.email:
-            # Check if email is already in use
-            existing_email_query = select(User).where(User.email == update_request.email)
-            existing_email_result = await self.db.execute(existing_email_query)
-            if existing_email_result.scalar_one_or_none():
+            if not user.is_active:
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Email already in use"
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User is inactive"
                 )
-            user.email = update_request.email
-        
-        await self.db.commit()
-        await self.db.refresh(user)
-        
-        logger.info(f"User profile updated: {user.email}")
-        return user
-
-    async def invalidate_token(self, token: str, user_id: int) -> None:
-        """
-        Invalidate a token by adding it to revoked tokens.
-        """
-        revoked_token = RevokedToken(
-            token=token, 
-            user_id=user_id, 
-            revoked_at=datetime.utcnow()
-        )
-        
-        self.db.add(revoked_token)
-        await self.db.commit()
-        
-        logger.info(f"Token invalidated for user ID: {user_id}")
-
-    async def refresh_access_token(self, refresh_token: str) -> str:
-        """
-        Refresh access token using a valid refresh token.
-        """
-        try:
-            # Decode refresh token
-            payload = jwt.decode(
-                refresh_token, 
-                self.jwt_settings["secret_key"], 
-                algorithms=[self.jwt_settings["algorithm"]]
-            )
+                
+            return user
             
-            # Validate token type
-            if payload.get("type") != "refresh":
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid refresh token"
-                )
-            
-            user_id = payload.get("sub")
-            user_role = payload.get("role")
-            
-            # Create new access token
-            new_access_token = await self.create_access_token(
-                data={"sub": user_id, "role": user_role}
-            )
-            
-            return new_access_token
-        
-        except JWTError:
+        except HTTPException:
+            raise
+        except ValueError as e:
+            logger.error(f"User ID parsing error: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired refresh token"
+                detail="Invalid user ID in token"
             )
-
-    async def list_users(
-        self, 
-        school_id: Optional[int] = None
-    ) -> List[User]:
-        """
-        List users with optional school filtering.
-        """
-        if school_id:
-            query = select(User).where(User.school_id == school_id)
-        else:
-            query = select(User)
-        
-        result = await self.db.execute(query)
-        return result.scalars().all()

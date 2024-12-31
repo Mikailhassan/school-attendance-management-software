@@ -3,7 +3,9 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, update
 from typing import List, Optional
 from datetime import date
-
+from app.schemas.enums import UserRole
+from app.services.email_service import EmailService
+from app.core.exceptions import DuplicateSchoolException
 from app.models import (
     School, Class, Stream, Session, User, Student, Parent,
     StudentAttendance
@@ -29,6 +31,7 @@ from app.schemas.school.responses import (
 )
 
 from app.schemas.student import StudentRegistrationRequest, StudentUpdate
+from app.core.logging import logger
 from app.core.database import get_db
 from app.core.security import generate_temporary_password, get_password_hash
 from app.core.dependencies import (
@@ -39,6 +42,9 @@ from app.core.dependencies import (
 from app.schemas.auth.requests import UserInDB
 from app.services.school_service import SchoolService
 from app.utils.email_utils import send_email
+
+
+email_service = EmailService()
 
 router = APIRouter(tags=["Admin"])
 
@@ -51,8 +57,26 @@ async def create_school(
     current_user: UserInDB = Depends(get_current_super_admin)
 ):
     """Create a new school and its admin account (super admin only)"""
-    school_service = SchoolService(db)
-    return await school_service.create_school(school_data, background_tasks)
+    try:
+        # Initialize the school service
+        school_service = SchoolService(db, email_service)
+        
+        # Use the service to create the school
+        result = await school_service.create_school(school_data, background_tasks)
+        
+        return result
+        
+    except DuplicateSchoolException as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error creating school: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating school"
+        )
 
 @router.get("/schools/{registration_number}")
 async def get_school_details(
@@ -81,34 +105,6 @@ async def get_school_details(
     
     return school
 
-# Class Management Endpoints
-@router.post("/schools/{registration_number}/classes")
-async def create_class(
-    registration_number: str,
-    class_data: ClassCreateRequest,
-    db: Session = Depends(get_db),
-    current_user: UserInDB = Depends(get_current_school_admin)
-):
-    """Create a new class in a school"""
-    clean_registration_number = registration_number.strip('{}')
-    
-    school = await db.execute(
-        select(School).where(School.registration_number == clean_registration_number)
-    )
-    school = school.scalar_one_or_none()
-    
-    if not school:
-        raise HTTPException(status_code=404, detail="School not found")
-    
-    new_class = Class(
-        name=class_data.name,
-        school_id=school.id
-    )
-    db.add(new_class)
-    await db.commit()
-    await db.refresh(new_class)
-    return new_class
-
 @router.get("/schools/{registration_number}/classes")
 async def list_classes(
     registration_number: str,
@@ -118,21 +114,21 @@ async def list_classes(
     """List all classes in a school"""
     clean_registration_number = registration_number.strip('{}')
     
-    school = await db.execute(
+    # Execute the query first, then call unique() on the Result object
+    result = await db.execute(
         select(School)
         .where(School.registration_number == clean_registration_number)
         .options(
             joinedload(School.classes).joinedload(Class.streams)
         )
     )
-    school = school.scalar_one_or_none()
+    school = result.unique().scalar_one_or_none()  # Call unique() on the Result object
     
     if not school:
         raise HTTPException(status_code=404, detail="School not found")
     
     return school.classes
 
-# Stream Management Endpoints
 @router.post("/schools/{registration_number}/classes/{class_id}/streams")
 async def create_stream(
     registration_number: str,
@@ -144,24 +140,21 @@ async def create_stream(
     """Create a new stream within a class"""
     clean_registration_number = registration_number.strip('{}')
     
-    school = await db.execute(
-        select(School).where(School.registration_number == clean_registration_number)
-    )
-    school = school.scalar_one_or_none()
-    
-    if not school:
-        raise HTTPException(status_code=404, detail="School not found")
-    
-    class_obj = await db.execute(
-        select(Class).where(
-            Class.id == class_id,
-            Class.school_id == school.id
+    # Use a single query to get both school and class
+    result = await db.execute(
+        select(School, Class)
+        .join(Class, School.id == Class.school_id)
+        .where(
+            School.registration_number == clean_registration_number,
+            Class.id == class_id
         )
     )
-    class_obj = class_obj.scalar_one_or_none()
+    school_and_class = result.first()
     
-    if not class_obj:
-        raise HTTPException(status_code=404, detail="Class not found")
+    if not school_and_class:
+        raise HTTPException(status_code=404, detail="School or class not found")
+    
+    school, class_obj = school_and_class
     
     new_stream = Stream(
         name=stream_data.name,
@@ -183,22 +176,26 @@ async def list_streams(
     """List all streams in a class"""
     clean_registration_number = registration_number.strip('{}')
     
-    school = await db.execute(
-        select(School).where(School.registration_number == clean_registration_number)
-    )
-    school = school.scalar_one_or_none()
-    
-    if not school:
-        raise HTTPException(status_code=404, detail="School not found")
-    
+    # Optimize query to check both school and streams in one go
     streams = await db.execute(
         select(Stream)
+        .join(School, Stream.school_id == School.id)
         .where(
-            Stream.class_id == class_id,
-            Stream.school_id == school.id
+            School.registration_number == clean_registration_number,
+            Stream.class_id == class_id
         )
     )
-    return streams.scalars().all()
+    
+    result = streams.scalars().all()
+    if not result:
+        # Verify if the school exists before returning empty results
+        school = await db.execute(
+            select(School).where(School.registration_number == clean_registration_number)
+        )
+        if not school.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="School not found")
+    
+    return result
 
 # Student Management Endpoints
 @router.post("/schools/{registration_number}/students")
@@ -212,6 +209,7 @@ async def register_student(
     """Register a new student with class and stream assignment"""
     clean_registration_number = registration_number.strip('{}')
     
+    # Get school
     school = await db.execute(
         select(School).where(School.registration_number == clean_registration_number)
     )
@@ -220,53 +218,108 @@ async def register_student(
     if not school:
         raise HTTPException(status_code=404, detail="School not found")
     
-    # Verify stream exists
+    # Verify stream exists and get its ID
     stream = await db.execute(
         select(Stream)
         .join(Class)
         .where(
             Stream.school_id == school.id,
-            Class.name == student_data.class_name,
+            Class.id == student_data.class_id,
             Stream.name == student_data.stream_name
         )
     )
     stream = stream.scalar_one_or_none()
-    
+
     if not stream:
-        raise HTTPException(status_code=404, detail="Stream not found")
-    
-    # Create user account
-    user = User(
+        raise HTTPException(
+            status_code=404,
+            detail=f"Stream not found for class_id {student_data.class_id} and stream {student_data.stream_name}"
+        )
+
+    # Create student user account
+    student_user = User(
+        name=student_data.name,
         email=student_data.email,
-        password=get_password_hash(student_data.password),
-        role='student',
+        password_hash=get_password_hash(student_data.password),
+        role=UserRole.STUDENT,
         school_id=school.id,
         is_active=True
     )
-    db.add(user)
+    db.add(student_user)
+    await db.flush()
+
+    # Generate temporary password for parent account
+    parent_temp_password = generate_temporary_password()
+    
+    # Create parent user account
+    parent_user = User(
+        name=f"Parent of {student_data.name}",
+        email=student_data.parent_email,  # Assuming this is added to StudentRegistrationRequest
+        password_hash=get_password_hash(parent_temp_password),
+        role=UserRole.PARENT,
+        school_id=school.id,
+        is_active=True
+    )
+    db.add(parent_user)
+    await db.flush()
+    
+    # Create parent record
+    parent = Parent(
+        name=f"Parent of {student_data.name}",
+        user_id=parent_user.id,
+        school_id=school.id,
+        phone=student_data.parent_phone,  
+        email=student_data.parent_email   
+    )
+    db.add(parent)
     await db.flush()
     
     # Create student profile
     student = Student(
         name=student_data.name,
         admission_number=student_data.admission_number,
+        class_id=student_data.class_id,
         stream_id=stream.id,
-        user_id=user.id,
+        user_id=student_user.id,
+        parent_id=parent.id,
         date_of_birth=student_data.date_of_birth or date.today(),
         school_id=school.id
     )
     db.add(student)
-    await db.commit()
-    await db.refresh(student)
+    
+    try:
+        await db.commit()
+        await db.refresh(student)
+        
+        # Send email to parent with temporary password
+        background_tasks.add_task(
+            send_email,
+            recipient_email=parent_user.email,
+            subject="School Management System - Parent Account Created",
+            body=f"""
+            Dear Parent,
+            
+            A parent account has been created for you in the School Management System.
+            Your temporary password is: {parent_temp_password}
+            
+            Please change your password after first login.
+            
+            Best regards,
+            School Management Team
+            """
+        )
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error creating student: {str(e)}"
+        )
     
     return {
         "message": "Student registered successfully",
         "student_id": student.id,
         "admission_number": student.admission_number
-    
-}
-
-
+    }
 
 @router.post("/schools/{registration_number}/sessions", response_model=SessionResponse)
 async def create_session(

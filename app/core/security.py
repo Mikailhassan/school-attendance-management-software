@@ -1,133 +1,244 @@
 # app/core/security.py
+
+from datetime import datetime, timedelta
 import secrets
 import re
-from typing import List, Optional
-from datetime import datetime, timedelta
 import string
-
-from passlib.context import CryptContext
-from fastapi import HTTPException
+from typing import Dict, Optional, Any, Union
 from jose import JWTError, jwt
+from fastapi import HTTPException, status
+from passlib.context import CryptContext
 
-from app.models import User
 from app.core.config import settings
-from app.core.logging import logger  
-from app.schemas.user.role import UserRoleEnum, RoleDetails
-from app.schemas.user.responses import UserProfileResponse
+from app.core.logging import logger
+from app.schemas.user.role import UserRoleEnum
 
-# Configure password hashing using Passlib with enhanced security parameters
+class SecurityConfig:
+    """Security configuration constants"""
+    MIN_PASSWORD_LENGTH = 12
+    MAX_PASSWORD_LENGTH = 128
+    PASSWORD_ROUNDS = 12
+    TOKEN_EXPIRE_MINUTES = 30
+    REFRESH_TOKEN_EXPIRE_DAYS = 7
+    RESET_TOKEN_EXPIRE_HOURS = 1
+    PASSWORD_REGEX = re.compile(
+        r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{12,}$"
+    )
+
 pwd_context = CryptContext(
     schemes=["bcrypt"],
     deprecated="auto",
-    bcrypt__default_rounds=12,  # Configurable work factor
-    bcrypt__min_rounds=10,
-    bcrypt__max_rounds=15
+    bcrypt__default_rounds=SecurityConfig.PASSWORD_ROUNDS
 )
 
-def generate_temporary_password(length: int = 12) -> str:
+async def verify_token(token: str, token_type: Optional[str] = None) -> Dict[str, Any]:
     """
-    Generates a secure temporary password with specified complexity requirements.
-    
-    The generated password will include:
-    - At least one uppercase letter
-    - At least one lowercase letter
-    - At least one number
-    - At least one special character
-    - Minimum length of 12 characters (configurable)
-    
-    :param length: The desired length of the password (default: 12)
-    :return: A secure temporary password string
-    :raises ValueError: If the requested length is too short to meet complexity requirements
+    Verify JWT token and optionally check token type
     """
-    if length < 8:
-        raise ValueError("Password length must be at least 8 characters")
-
-    # Define character sets
-    lowercase = string.ascii_lowercase
-    uppercase = string.ascii_uppercase
-    digits = string.digits
-    # Exclude ambiguous special characters to avoid confusion
-    special = "!@#$%^&*()_+-=[]{}|"
-
-    # Ensure at least one character from each set
-    password = [
-        secrets.choice(lowercase),
-        secrets.choice(uppercase),
-        secrets.choice(digits),
-        secrets.choice(special)
-    ]
-
-    # Fill the rest with random characters from all sets
-    all_characters = lowercase + uppercase + digits + special
-    
-    # Generate remaining characters
-    for _ in range(length - 4):
-        password.append(secrets.choice(all_characters))
-
-    # Shuffle the password characters
-    secrets.SystemRandom().shuffle(password)
-    
-    # Join characters into final password
-    final_password = ''.join(password)
-    
-    # Verify password meets requirements
-    if not all([
-        re.search(r'[a-z]', final_password),
-        re.search(r'[A-Z]', final_password),
-        re.search(r'\d', final_password),
-        re.search(f'[{re.escape(special)}]', final_password)
-    ]):
-        # Recursively generate new password if requirements not met
-        return generate_temporary_password(length)
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
         
-    return final_password
+        if token_type and payload.get("type") != token_type:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid token type. Expected {token_type}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            
+        return payload
+        
+    except JWTError as e:
+        logger.error(f"Token verification failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+def create_token(
+    data: Dict[str, Any],
+    token_type: str,
+    expires_delta: Optional[timedelta] = None
+) -> str:
+    """Create JWT token with specified type and expiration"""
+    to_encode = data.copy()
+    
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=SecurityConfig.TOKEN_EXPIRE_MINUTES)
+
+    to_encode.update({
+        "exp": expire,
+        "type": token_type,
+        "jti": secrets.token_urlsafe(32)
+    })
+
+    return jwt.encode(
+        to_encode,
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM
+    )
 
 def get_password_hash(password: str) -> str:
-    """
-    Hashes a password using bcrypt with configurable complexity.
-    
-    :param password: The password to hash.
-    :return: The hashed password.
-    """
+    """Hash password using bcrypt"""
     return pwd_context.hash(password)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Verifies if the given plain password matches the hashed password.
-    
-    :param plain_password: The plain text password to verify.
-    :param hashed_password: The hashed password to check against.
-    :return: True if the password matches, False otherwise.
-    """
+    """Verify password against hash"""
     return pwd_context.verify(plain_password, hashed_password)
 
-def verify_token(token: str):
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        print(f"Decoded payload: {payload}")  # For debugging
-        return payload
-    except Exception as e:
-        print(f"Token verification error: {str(e)}")  # For debugging
-        raise HTTPException(status_code=401, detail="Could not validate credentials")
+def generate_password_reset_token(email: str) -> str:
+    """Generate password reset token"""
+    data = {
+        "sub": email,
+        "reset_id": secrets.token_urlsafe(32)
+    }
+    return create_token(data, "reset", timedelta(hours=SecurityConfig.RESET_TOKEN_EXPIRE_HOURS))
 
+def create_access_token(user_id: Union[int, str], role: UserRoleEnum) -> str:
+    """Create access token with user ID and role"""
+    data = {
+        "sub": str(user_id),
+        "role": role.value
+    }
+    return create_token(data, "access", timedelta(minutes=SecurityConfig.TOKEN_EXPIRE_MINUTES))
+
+def create_refresh_token(user_id: Union[int, str]) -> str:
+    """Create refresh token with user ID"""
+    data = {"sub": str(user_id)}
+    return create_token(data, "refresh", timedelta(days=SecurityConfig.REFRESH_TOKEN_EXPIRE_DAYS))
+
+def generate_temporary_password(length: int = SecurityConfig.MIN_PASSWORD_LENGTH) -> str:
+    """Generate secure temporary password"""
+    if length < SecurityConfig.MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Password length must be at least {SecurityConfig.MIN_PASSWORD_LENGTH} characters")
+    if length > SecurityConfig.MAX_PASSWORD_LENGTH:
+        raise ValueError(f"Password length must not exceed {SecurityConfig.MAX_PASSWORD_LENGTH} characters")
+    
+    chars = string.ascii_letters + string.digits + "@$!%*?&"
+    while True:
+        password = ''.join(secrets.choice(chars) for _ in range(length))
+        if (any(c.islower() for c in password) 
+            and any(c.isupper() for c in password)
+            and any(c.isdigit() for c in password)
+            and any(c in "@$!%*?&" for c in password)):
+            return password
+
+class TokenHandler:
+    """JWT token generation and validation"""
+
+    @staticmethod
+    def create_token(
+        data: Dict[str, Any],
+        token_type: str,
+        expires_delta: Optional[timedelta] = None
+    ) -> str:
+        """Create JWT token with specified type and expiration"""
+        to_encode = data.copy()
+        
+        if expires_delta:
+            expire = datetime.utcnow() + expires_delta
+        else:
+            if token_type == TokenType.ACCESS:
+                expire = datetime.utcnow() + timedelta(
+                    minutes=SecurityConfig.TOKEN_EXPIRE_MINUTES
+                )
+            elif token_type == TokenType.REFRESH:
+                expire = datetime.utcnow() + timedelta(
+                    days=SecurityConfig.REFRESH_TOKEN_EXPIRE_DAYS
+                )
+            elif token_type == TokenType.RESET:
+                expire = datetime.utcnow() + timedelta(
+                    hours=SecurityConfig.RESET_TOKEN_EXPIRE_HOURS
+                )
+            else:
+                expire = datetime.utcnow() + timedelta(minutes=15)
+
+        to_encode.update({
+            "exp": expire,
+            "type": token_type,
+            "jti": secrets.token_urlsafe(32)  # Unique token ID
+        })
+
+        return jwt.encode(
+            to_encode,
+            settings.SECRET_KEY,
+            algorithm=settings.ALGORITHM
+        )
+
+    @staticmethod
+    def verify_token(
+        token: str,
+        token_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Verify JWT token and optionally check token type
+        
+        Args:
+            token: JWT token to verify
+            token_type: Expected token type (optional)
+            
+        Returns:
+            Dict containing token payload
+            
+        Raises:
+            HTTPException: If token is invalid or wrong type
+        """
+        try:
+            payload = jwt.decode(
+                token,
+                settings.SECRET_KEY,
+                algorithms=[settings.ALGORITHM]
+            )
+            
+            # Verify token type if specified
+            if token_type and payload.get("type") != token_type:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Invalid token type. Expected {token_type}",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                
+            return payload
+            
+        except JWTError as e:
+            logger.error(f"Token verification failed: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+def get_password_hash(password: str) -> str:
+    """Hash password using bcrypt"""
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against hash"""
+    return pwd_context.verify(plain_password, hashed_password)
 
 def generate_password_reset_token(email: str) -> str:
-    """
-    Generates a secure JWT token for password reset with added uniqueness.
-    
-    :param email: The email address for which the password reset token is generated.
-    :return: The generated password reset token.
-    """
-    reset_token = secrets.token_urlsafe(32)  # Cryptographically secure random token
-    expiration = datetime.utcnow() + timedelta(hours=1)  # Token expires in 1 hour
-    
-    payload = {
+    """Generate password reset token"""
+    data = {
         "sub": email,
-        "exp": expiration,
-        "reset_token": reset_token
+        "reset_id": secrets.token_urlsafe(32)
     }
-    
-    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
-    
-    logger.info(f"Password reset token generated for email: {email}")
-    return token
+    return TokenHandler.create_token(data, TokenType.RESET)
+
+def create_access_token(user_id: Union[int, str], role: UserRoleEnum) -> str:
+    """Create access token with user ID and role"""
+    data = {
+        "sub": str(user_id),
+        "role": role.value
+    }
+    return TokenHandler.create_token(data, TokenType.ACCESS)
+
+def create_refresh_token(user_id: Union[int, str]) -> str:
+    """Create refresh token with user ID"""
+    data = {"sub": str(user_id)}
+    return TokenHandler.create_token(data, TokenType.REFRESH)

@@ -7,11 +7,19 @@ from app.core.database import init_db, close_db, get_db
 from app.core.security import get_password_hash
 from app.models.user import User
 from app.models.school import School
+from app.services.email_service import EmailService
 from sqlalchemy.future import select
 import logging
 
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
+
+
+# Initialize EmailService
+email_service = EmailService()
+
+def get_email_service():
+    return email_service
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -37,7 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(teacher.router, prefix="/api/v1/teachers", tags=["Teachers"])
     app.include_router(student.router, prefix="/api/v1/students", tags=["Students"])
     app.include_router(parent.router, prefix="/api/v1/parents", tags=["Parents"])
-    app.include_router(attendance.router, prefix="/api/v1/attendance", tags=["Attendance"])
+    # app.include_router(attendance.router, prefix="/api/v1/attendance", tags=["Attendance"])
 
     @app.on_event("startup")
     async def startup_event():

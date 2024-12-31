@@ -1,82 +1,73 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
-from app.services.school_service import SchoolService
 from sqlalchemy.orm import Session
-from app.services import AuthService, RegistrationService, EmailService
+from typing import List, Dict, Any
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from app.utils import cookie_utils
+
+from app.services import AuthService, RegistrationService, EmailService, SchoolService
 from app.schemas import (
     RegisterRequest,
     RegisterResponse,
     UserUpdateRequest,
-    PasswordResetRequest,
     UserResponse,
     LoginResponse,
     TokenResponse,
-    SchoolRegistrationRequest,
-    TeacherRegistrationRequest,
-    StudentRegistrationRequest,
-    ParentRegistrationRequest,
-    SchoolAdminRegistrationRequest
+    SchoolCreateRequest,
 )
 from app.core.dependencies import (
-    get_db, 
-    get_current_user, 
+    get_db,
+    get_current_user,
     get_current_super_admin
 )
 from app.models import User
+from app.core.config import settings
 
 router = APIRouter(tags=["Authentication"])
 
 def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
     return AuthService(db=db)
 
-def get_registration_service(
-    db: AsyncSession = Depends(get_db)
-) -> RegistrationService:
+def get_registration_service(db: Session = Depends(get_db)) -> RegistrationService:
     return RegistrationService(db=db)
 
-def get_email_service() -> EmailService:
-    return EmailService()
+def get_email_service(db: Session = Depends(get_db)) -> EmailService:
+    return EmailService(db=db)
 
-@router.post("/register/school-admin")
-async def register_school_admin(
-    request: SchoolAdminRegistrationRequest,
+def get_cookie_settings(request: Request) -> Dict[str, Any]:
+    """Get appropriate cookie settings based on environment"""
+    host = request.headers.get("host", "").split(":")[0]
+    is_localhost = host in ["localhost", "127.0.0.1"]
+    
+    return {
+        "httponly": True,
+        "secure": not is_localhost,
+        "samesite": "lax" if is_localhost else "strict",
+        "domain": None if is_localhost else f".{host}",
+    }
+
+@router.post("/register/school")
+async def register_school(
+    request: SchoolCreateRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_super_admin)
-):
-    """Register a new school admin (Super Admin only)"""
+) -> Dict[str, Any]:
+    """Register a new school with admin account (Super Admin only)"""
     try:
-        # First verify school exists using registration number
         school_service = SchoolService(db)
-        school = await school_service.get_school_by_registration(
-            request.school_registration_number
-        )
-        
-        # Then proceed with registration
-        registration_service = RegistrationService(db)
-        user = await registration_service.register_school_admin(
-            request,
-            school.id  # Pass the actual school ID internally
-        )
-        
-        # Send credentials email
-        email_service = EmailService()
-        await email_service.send_school_admin_credentials(
-            user.email,
-            user.name,
-            request.password,
-            school.name,
-            school.registration_number
-        )
+        result = await school_service.create_school(request, background_tasks)
         
         return {
-            "message": "School admin registered successfully",
-            "user_id": user.id,
-            "school_registration_number": school.registration_number
+            "message": "School and admin account created successfully",
+            "school_id": result["school_id"],
+            "registration_number": result["registration_number"],
+            "admin_email": result["admin_email"]
         }
-        
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -86,58 +77,39 @@ async def register_school_admin(
 @router.post("/register", response_model=RegisterResponse)
 async def register(
     request: RegisterRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     registration_service: RegistrationService = Depends(get_registration_service),
     email_service: EmailService = Depends(get_email_service)
-):
-    """Register users based on role (except school admin)"""
-    
-    if not request.role:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Role is required for registration"
-        )
-    
-    if request.role == "school_admin":
+) -> RegisterResponse:
+    """Register users based on role"""
+    if request.role in ["school", "school_admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="School admin registration must use /register/school-admin endpoint"
+            detail=f"{request.role} registration must use appropriate endpoint"
         )
-        
+    
     try:
-        if request.role == "school":
-            school_request = SchoolRegistrationRequest(**request.dict())
-            return await registration_service.register_school(school_request)
-            
-        elif request.role == "teacher":
-            teacher_request = TeacherRegistrationRequest(**request.dict())
-            user = await registration_service.register_teacher(
-                teacher_request,
-                request.school_id
-            )
-            await email_service.send_teacher_credentials(
-                user.email,
-                user.name,
-                request.password,
-                user.school.name
-            )
-            return user
-            
-        elif request.role == "student":
-            student_request = StudentRegistrationRequest(**request.dict())
-            return await registration_service.register_student(
-                student_request,
-                request.school_id
+        registration_methods = {
+            "teacher": registration_service.register_teacher,
+            "student": registration_service.register_student,
+            "parent": registration_service.register_parent
+        }
+        
+        if request.role not in registration_methods:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid role: {request.role}"
             )
             
-        elif request.role == "parent":
-            parent_request = ParentRegistrationRequest(**request.dict())
-            user = await registration_service.register_parent(
-                parent_request,
-                request.student_id
-            )
+        register_func = registration_methods[request.role]
+        
+        # Handle specific registration logic
+        if request.role == "parent":
+            user = await register_func(request, request.student_id)
             access_link = f"{request.base_url}/parent-portal?token={user.generate_access_token()}"
-            await email_service.send_parent_portal_access(
+            background_tasks.add_task(
+                email_service.send_parent_portal_access,
                 user.email,
                 user.name,
                 request.password,
@@ -145,14 +117,19 @@ async def register(
                 access_link,
                 user.school.name
             )
-            return user
-            
         else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid role: {request.role}"
-            )
-            
+            user = await register_func(request, request.school_id)
+            if request.role == "teacher":
+                background_tasks.add_task(
+                    email_service.send_teacher_credentials,
+                    user.email,
+                    user.name,
+                    request.password,
+                    user.school.name
+                )
+        
+        return user
+        
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -161,43 +138,62 @@ async def register(
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
+    response: Response = Response(),
     language: str = 'en',
     auth_service: AuthService = Depends(get_auth_service)
-):
-    """Login and obtain JWT access and refresh tokens."""
-    return await auth_service.authenticate_user(
-        form_data.username,
-        form_data.password,
-        language
-    )
+) -> LoginResponse:
+    try:
+        if not request:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request object is required"
+            )
 
-@router.post("/password-reset", response_model=dict)
-async def password_reset(
+        # Pass both response AND request to authenticate_user
+        auth_result = await auth_service.authenticate_user(
+            form_data.username,  # This is the email
+            form_data.password,
+            response,
+            request,  # Add the request parameter here
+            language
+        )
+        
+        return auth_result
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+@router.post("/password-reset")
+async def request_password_reset(
     email: str,
+    background_tasks: BackgroundTasks,
     language: str = 'en',
-    auth_service: AuthService = Depends(get_auth_service),
-    email_service: EmailService = Depends(get_email_service)
-):
-    """Generate and send password reset token."""
+    auth_service: AuthService = Depends(get_auth_service)
+) -> Dict[str, str]:
+    """Request password reset token"""
     reset_token = await auth_service.generate_password_reset_token(email)
-    return {"reset_token": reset_token}
+    return {"message": "Password reset instructions sent"}
 
-@router.post("/reset-password", response_model=dict)
+@router.post("/reset-password")
 async def reset_password(
     reset_token: str,
     new_password: str,
     language: str = 'en',
     auth_service: AuthService = Depends(get_auth_service)
-):
-    """Reset password using token."""
+) -> Dict[str, str]:
+    """Reset password using token"""
     success = await auth_service.reset_password(reset_token, new_password, language)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password reset failed"
         )
-    return {"msg": "Password reset successful"}
+    return {"message": "Password reset successful"}
 
 @router.put("/update-profile", response_model=UserResponse)
 async def update_profile(
@@ -205,8 +201,8 @@ async def update_profile(
     update_request: UserUpdateRequest,
     current_user: User = Depends(get_current_user),
     auth_service: AuthService = Depends(get_auth_service)
-):
-    """Update user profile information."""
+) -> UserResponse:
+    """Update user profile information"""
     if current_user.id != user_id and current_user.role != "super_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -214,33 +210,73 @@ async def update_profile(
         )
     return await auth_service.update_user_profile(user_id, update_request)
 
-@router.post("/logout", response_model=dict) 
+@router.post("/logout")
 async def logout(
-    token: str,
+    response: Response,
+    request: Request,
     current_user: User = Depends(get_current_user),
     auth_service: AuthService = Depends(get_auth_service)
-):
-    """Invalidate user token."""
-    await auth_service.invalidate_token(token, current_user.id)
-    return {"msg": "Logged out successfully"}
+) -> Dict[str, str]:
+    """Logout user and invalidate tokens"""
+    token = auth_service.get_token_from_cookie(request)
+    
+    cookie_settings = get_cookie_settings(request)
+    
+    # Clear access token
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        **cookie_settings
+    )
+    
+    # Clear refresh token
+    refresh_cookie_settings = cookie_settings.copy()
+    refresh_cookie_settings["path"] = "/api/v1/auth/refresh"
+    response.delete_cookie(
+        key="refresh_token",
+        **refresh_cookie_settings
+    )
+    
+    return await auth_service.logout(response, token, current_user.id)
 
 @router.post("/refresh-token", response_model=TokenResponse)
 async def refresh_token(
-    refresh_token: str,
+    request: Request,
+    response: Response,
     auth_service: AuthService = Depends(get_auth_service)
-):
-    """Refresh access token."""
-    new_access_token = await auth_service.refresh_access_token(refresh_token)
-    return {"access_token": new_access_token}
+) -> TokenResponse:
+    """Refresh access token using refresh token"""
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token not found"
+        )
+    
+    token_result = await auth_service.refresh_access_token(refresh_token, response)
+    
+    cookie_settings = get_cookie_settings(request)
+    
+    # Set new access token cookie
+    access_expiration = datetime.utcnow() + timedelta(minutes=auth_service.access_token_expire_minutes)
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {token_result['access_token']}",
+        expires=access_expiration,
+        max_age=auth_service.access_token_expire_minutes * 60,
+        path="/",
+        **cookie_settings
+    )
+    
+    return token_result
 
 @router.get("/users", response_model=List[UserResponse])
 async def list_users(
     school_id: int = None,
     current_user: User = Depends(get_current_user),
     registration_service: RegistrationService = Depends(get_registration_service)
-):
-    """List users, optionally filtered by school."""
-    # Only super_admin can list all users, others are restricted to their school
+) -> List[UserResponse]:
+    """List users, optionally filtered by school"""
     if current_user.role != "super_admin" and (
         school_id is None or school_id != current_user.school_id
     ):
@@ -249,3 +285,9 @@ async def list_users(
             detail="Not authorized to list users from other schools"
         )
     return await registration_service.get_school_users(school_id)
+
+# Health check endpoint
+@router.get("/health")
+async def health_check() -> Dict[str, str]:
+    """Health check endpoint"""
+    return {"status": "healthy"}

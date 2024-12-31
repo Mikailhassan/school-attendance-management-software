@@ -3,7 +3,8 @@ from typing import Optional
 from .base import ParentBase
 
 class ParentCreate(ParentBase):
-    password: str  # Password for creating the parent profile
+   school_id: int
+   password: Optional[str] = None # Password for creating the parent profile
 
 class ParentUpdate(BaseModel):
     name: Optional[str] = None

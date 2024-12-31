@@ -3,12 +3,14 @@ from .base import TeacherBase
 from .requests import (
     TeacherCreate,
     TeacherUpdate,
-    TeacherRegistrationRequest
+    TeacherRegistrationRequest,
+    TeacherUpdateRequest
 )
 from .responses import (
     TeacherResponse,
     TeacherUpdateResponse,
-    TeacherListResponse
+    TeacherListResponse,
+    TeacherDetailResponse
 )
 
 __all__ = [

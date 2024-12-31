@@ -51,12 +51,14 @@ from .teacher.base import TeacherBase
 from .teacher.requests import (
     TeacherCreate,
     TeacherUpdate,
-    TeacherRegistrationRequest
+    TeacherRegistrationRequest,
+    TeacherUpdateRequest
 )
 from .teacher.responses import (
     TeacherResponse,
     TeacherUpdateResponse,
-    TeacherListResponse
+    TeacherListResponse,
+    TeacherDetailResponse
 )
 
 # Import student schemas

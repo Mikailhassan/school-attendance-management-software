@@ -11,8 +11,8 @@ class Student(TenantModel):
     name = Column(String, nullable=False)
     date_of_birth = Column(Date, nullable=False)
     admission_number = Column(String, unique=True, nullable=False)
-    form = Column(String, nullable=False)
-    stream_id = Column(Integer, ForeignKey('streams.id'))
+    class_id = Column(Integer, ForeignKey('classes.id'), nullable=False)  # Added class_id
+    stream_id = Column(Integer, ForeignKey('streams.id'), nullable=True)  # Made str
     user_id = Column(Integer, ForeignKey('users.id'), unique=True, nullable=False)
     parent_id = Column(Integer, ForeignKey('parents.id'), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

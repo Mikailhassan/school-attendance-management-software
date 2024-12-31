@@ -58,7 +58,7 @@ class SchoolResponse(BaseModel):
     county: Optional[str] = None
     postal_code: Optional[str] = None
     is_active: bool
-    created_at: datetime
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     extra_info: Optional[Dict[str, Any]] = None
 

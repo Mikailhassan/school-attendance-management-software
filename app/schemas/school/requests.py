@@ -9,7 +9,15 @@ import re
 class SchoolType(str, Enum):
     PRIMARY = "primary"
     SECONDARY = "secondary"
-    TERTIARY = "tertiary"
+    BOTH = "both"
+    TECHNICAL = "technical"
+    VOCATIONAL = "vocational"
+
+class SchoolStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    SUSPENDED = "suspended"
+    PENDING = "pending"    
 
 class ClassRange(BaseModel):
     start: int
@@ -43,13 +51,25 @@ class SchoolAdminRegistrationRequest(BaseModel):
     school_registration_number: str = Field(min_length=5, max_length=50)
     school_id: int 
 
+class SchoolFilterParams(BaseModel):
+    """
+    Schema for filtering schools in list operations
+    """
+    search: Optional[str] = None
+    school_type: Optional[SchoolType] = None
+    county: Optional[str] = None
+    status: Optional[SchoolStatus] = None
+    
+    class Config:
+        use_enum_values = True
+
 
 class SchoolCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=255)
     email: EmailStr
     phone: str = Field(examples=["+254722000000"])
     address: str = Field(min_length=5, max_length=255)
-    registration_number: str = Field(min_length=5, max_length=50)
+    registration_number: Optional[str] = Field(None, min_length=5, max_length=50)   
     school_type: SchoolType
     website: Optional[AnyUrl] = None
     county: Optional[str] = None
@@ -57,6 +77,15 @@ class SchoolCreateRequest(BaseModel):
     class_range: Dict[str, int]   
     postal_code: Optional[str] = None
     extra_info: Optional[Dict[str, Any]] = None
+
+
+
+    def to_db_dict(self) -> dict:
+        """Convert model to database-friendly dictionary"""
+        data = self.model_dump()
+        if data.get('website'):
+            data['website'] = str(data['website'])
+        return data
 
     @model_validator(mode='after')
     def validate_phone_number(self) -> 'SchoolCreateRequest':

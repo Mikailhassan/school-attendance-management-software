@@ -1,3 +1,20 @@
+# Ignore virtual environments
+venv/
+
+# Ignore compiled Python files
+__pycache__/
+
+# Ignore environment variables file
 .env
-venv
-__pycache__
+
+# Ignore other common files/directories
+*.pyc
+*.pyo
+*.pyd
+.Python
+migrations/
+*.sqlite3
+.DS_Store
+*.log
+.idea/
+.vscode/
