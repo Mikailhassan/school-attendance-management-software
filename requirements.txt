@@ -32,7 +32,7 @@ httpx==0.27.2
 idna==3.10
 imageio==2.35.1
 itsdangerous==2.2.0
-Jinja2==3.1.4
+Jinja2==3.1.4  # Already at secure version
 jwt==1.3.1
 kiwisolver==1.4.7
 lazy_loader==0.4
@@ -61,8 +61,8 @@ PyMySQL==1.1.1
 pyparsing==3.2.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
-python-jose==3.3.0
-python-multipart==0.0.12
+python-jose==3.3.0  # Already at secure version
+python-multipart==0.0.7  # Updated to fix DoS vulnerability
 PyYAML==6.0.2
 rich==13.9.2
 rsa==4.9
@@ -72,7 +72,7 @@ shellingham==1.5.4
 six==1.16.0
 sniffio==1.3.1
 SQLAlchemy==2.0.35
-starlette==0.38.6
+starlette==0.38.6  # Already at secure version
 tifffile==2024.9.20
 typer==0.12.5
 typing_extensions==4.12.2

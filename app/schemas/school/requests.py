@@ -1,4 +1,3 @@
-# app/schemas/school/requests.py
 from pydantic import BaseModel, EmailStr, Field, AnyUrl, model_validator
 from typing import Optional, Dict, Any, List
 from datetime import datetime
@@ -9,7 +8,7 @@ import re
 class SchoolType(str, Enum):
     PRIMARY = "primary"
     SECONDARY = "secondary"
-    BOTH = "both"
+    MIXED = "mixed"
     TECHNICAL = "technical"
     VOCATIONAL = "vocational"
 
@@ -20,8 +19,13 @@ class SchoolStatus(str, Enum):
     PENDING = "pending"    
 
 class ClassRange(BaseModel):
-    start: int
-    end: int    
+    start: str
+    end: str    
+
+class SchoolAdmin(BaseModel):
+    email: EmailStr
+    phone: str
+    password: str = Field(min_length=8)
 
 class SchoolRegistrationRequest(SchoolBase):
     registration_number: str = Field(min_length=5, max_length=50)
@@ -63,22 +67,19 @@ class SchoolFilterParams(BaseModel):
     class Config:
         use_enum_values = True
 
-
 class SchoolCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=255)
     email: EmailStr
     phone: str = Field(examples=["+254722000000"])
     address: str = Field(min_length=5, max_length=255)
-    registration_number: Optional[str] = Field(None, min_length=5, max_length=50)   
     school_type: SchoolType
     website: Optional[AnyUrl] = None
     county: Optional[str] = None
     class_system: str = Field(min_length=2, max_length=50)
-    class_range: Dict[str, int]   
+    class_range: ClassRange
     postal_code: Optional[str] = None
     extra_info: Optional[Dict[str, Any]] = None
-
-
+    school_admin: SchoolAdmin
 
     def to_db_dict(self) -> dict:
         """Convert model to database-friendly dictionary"""
@@ -95,15 +96,29 @@ class SchoolCreateRequest(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "name": "St. Mary's School",
-                "email": "info@stmarys.edu",
-                "phone": "+254722000000",
-                "address": "123 Education Lane, Nairobi",
-                "registration_number": "SCH-2024-001",
+                "name": "Saka Girls Secondary School",
+                "email": "abdullahiwardere@gmail.com",
+                "phone": "+254711997404",
+                "address": "123 Saka Road, Northern County",
+                "registration_number": "SGSS123",
                 "school_type": "secondary",
-                "website": "https://www.stmarys.edu",
-                "county": "Nairobi",
-                "postal_code": "00100"
+                "website": "http://sakagirlssecondaryschool.com",
+                "county": "Northern County",
+                "class_system": "8-4-4",
+                "class_range": {
+                    "start": "Form 1",
+                    "end": "Form 4"
+                },
+                "postal_code": "00100",
+                "extra_info": {
+                    "motto": "Education for a brighter future",
+                    "established": "2005"
+                },
+                "school_admin": {
+                    "email": "abdullahiwardere@yahoo.com",
+                    "phone": "0711997404",
+                    "password": "Abdullahi2024@"
+                }
             }
         }
     }
@@ -162,20 +177,17 @@ class ClassCreateRequest(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "name": "Class 1",
-               
+                "name": "Class 1"
             }
         }
     }
 
 class ClassUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=50)
-  
 
 class StreamCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     class_id: int
-    
 
     model_config = {
         "json_schema_extra": {
