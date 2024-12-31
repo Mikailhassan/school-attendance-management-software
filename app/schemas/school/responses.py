@@ -74,7 +74,7 @@ class SchoolResponse(BaseModel):
             "example": {
                 "id": 1,
                 "name": "Saka Girls Secondary School",
-                "email": "abdullahiwardere@gmail.com",
+                "email": "abdullahiwardere@yahoo.com",
                 "phone": "+254711997404",
                 "address": "123 Saka Road, Northern County",
                 "registration_number": "SGSS123",
