@@ -77,7 +77,7 @@ class SchoolResponse(BaseModel):
                 "email": "abdullahiwardere@yahoo.com",
                 "phone": "+254711997404",
                 "address": "123 Saka Road, Northern County",
-                "registration_number": "SGSS123",
+                "registration_number": "SCH-2024-008",
                 "school_type": "secondary",
                 "website": "http://sakagirlssecondaryschool.com",
                 "county": "Northern County",
@@ -87,7 +87,7 @@ class SchoolResponse(BaseModel):
                     "end": "Form 4"
                 },
                 "postal_code": "00100",
-                "is_active": true,
+                "is_active": True,
                 "created_at": "2024-03-19T12:00:00Z",
                 "updated_at": "2024-03-19T12:00:00Z",
                 "extra_info": {

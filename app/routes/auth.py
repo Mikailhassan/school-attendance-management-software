@@ -18,6 +18,7 @@ from app.schemas import (
     LoginResponse,
     TokenResponse,
     SchoolCreateRequest,
+    LoginRequest
 )
 from app.core.dependencies import (
     get_db,
@@ -135,11 +136,10 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
-
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: Request,
-    form_data: OAuth2PasswordRequestForm = Depends(),
+    credentials: LoginRequest,  # Changed from OAuth2PasswordRequestForm to LoginRequest
     response: Response = Response(),
     language: str = 'en',
     auth_service: AuthService = Depends(get_auth_service)
@@ -153,10 +153,10 @@ async def login(
 
         # Pass both response AND request to authenticate_user
         auth_result = await auth_service.authenticate_user(
-            form_data.username,  # This is the email
-            form_data.password,
+            credentials.email,  
+            credentials.password,
             response,
-            request,  # Add the request parameter here
+            request,
             language
         )
         
