@@ -107,13 +107,18 @@ from .parents.responses import ParentResponse, ParentCreateResponse, ParentUpdat
 # Import attendance schemas
 from .attendance.base import AttendanceBase
 from .attendance.requests import (
-    AttendanceCreate,
-    AttendanceRequest
+    AttendanceRequest,
+    StreamAttendanceRequest,
+    BulkAttendanceRequest,
 )
 from .attendance.responses import (
-    AttendanceResponse,
-    WeeklyAttendanceResponse,
-    PeriodAttendanceResponse
+    
+    StreamAttendanceResponse,
+    ClassAttendanceResponse,
+    StudentAttendanceRecord,
+    StreamAttendanceSummary,
+    ClassAttendanceSummary,
+    AttendanceAnalytics
 )
 from .attendance.analytics import AttendanceAnalytics
 

@@ -23,7 +23,8 @@ from app.schemas import (
 from app.core.dependencies import (
     get_db,
     get_current_user,
-    get_current_super_admin
+    get_current_super_admin,
+    get_current_active_user
 )
 from app.models import User
 from app.core.config import settings
@@ -51,6 +52,7 @@ def get_cookie_settings(request: Request) -> Dict[str, Any]:
         "samesite": "lax" if is_localhost else "strict",
         "domain": None if is_localhost else f".{host}",
     }
+
 
 @router.post("/register/school")
 async def register_school(

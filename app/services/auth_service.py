@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 import uuid
+import re
 import asyncio
 from app.core.database import get_db
 from pydantic_settings import BaseSettings
@@ -298,39 +299,20 @@ class AuthService:
 
     async def create_token(
         self,
-        data: Dict[str, Any],
-        token_type: str = "access",
-        expires_delta: Optional[timedelta] = None
+        data: Dict[str, Any], 
+        token_type: str = "access"
     ) -> str:
         """Create JWT token"""
         try:
             to_encode = data.copy()
             
-            # Convert UserRole enum to string value
-            if 'role' in to_encode and isinstance(to_encode['role'], UserRole):
-                to_encode['role'] = to_encode['role'].value
-            
-            # Ensure required fields
-            if "sub" not in to_encode and "id" in to_encode:
-                to_encode["sub"] = str(to_encode["id"])
-            elif "id" not in to_encode and "sub" in to_encode:
-                to_encode["id"] = str(to_encode["sub"])
-                
-            if not to_encode.get("sub"):
-                raise ValueError("Token must include user identifier (sub)")
-            
-            # Set expiration
+            # Set expiration time
             if token_type == "access":
-                expire = datetime.now(timezone.utc) + (
-                    expires_delta if expires_delta
-                    else timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-                )
+                expire = datetime.now(timezone.utc) + timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
             else:  # refresh token
-                expire = datetime.now(timezone.utc) + timedelta(
-                    days=self.settings.REFRESH_TOKEN_EXPIRE_DAYS
-                )
+                expire = datetime.now(timezone.utc) + timedelta(days=self.settings.REFRESH_TOKEN_EXPIRE_DAYS)
             
-            # Update with standard JWT claims
+            # Add standard JWT claims
             to_encode.update({
                 "exp": expire,
                 "iat": datetime.now(timezone.utc),
@@ -353,82 +335,109 @@ class AuthService:
                 self.settings.SECRET_KEY,
                 algorithm=self.settings.ALGORITHM
             )
-        except ValueError as e:
-            logger.error(f"Token creation value error: {str(e)}")
-            raise AuthenticationError(str(e))
+            
         except Exception as e:
             logger.error(f"Error creating {token_type} token: {str(e)}")
             raise AuthenticationError(f"Could not create {token_type} token")
-
-    async def verify_token(self, token: str) -> Dict[str, Any]:
-        """Verify and decode JWT token"""
-        try:
-            # Clean token
-            if token.startswith("Bearer "):
-                token = token[7:]
+    async def verify_token(
+            self,
+            token: str,
+            expected_type: Optional[str] = None
+        ) -> Dict[str, Any]:
+            """
+            Verify and decode JWT token
             
-            # Decode and verify
-            payload = jwt.decode(
-                token,
-                self.settings.SECRET_KEY,
-                algorithms=[self.settings.ALGORITHM]
-            )
-            
-            # Validate required claims
-            if not payload.get("sub"):
-                raise JWTError("Token missing required 'sub' claim")
-            
-            if not payload.get("type"):
-                raise JWTError("Token missing required 'type' claim")
-            
-            # Check revocation
-            is_revoked = await self.check_token_revocation(token)
-            if is_revoked:
-                raise JWTError("Token has been revoked")
-            
-            # Log verification (without sensitive data)
-            # Enhanced secure logging for verification
-            SecurityLogging.log_auth_event(
-            "token_verified",
-            user_id=payload.get("sub"),
-            token_type=payload.get("type")
-            )
-            logger.debug(
-)
-            
-            return payload
-            
-        except jwt.ExpiredSignatureError:
-            SecurityLogging.log_auth_event(
-                "token_expired",
-                user_id=payload.get("sub") if 'payload' in locals() else None,
-                token_type=payload.get("type") if 'payload' in locals() else None
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has expired",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-        except JWTError as e:
-            SecurityLogging.log_auth_event(
-                "token_verification_failed",
-                error=e
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-        except Exception as e:
-            SecurityLogging.log_auth_event(
-                "token_verification_error",
-                error=e
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+            Args:
+                token: JWT token to verify
+                expected_type: Optional expected token type ("access" or "refresh")
+                
+            Returns:
+                Dict[str, Any]: Decoded token payload
+            """
+            try:
+                # Clean token
+                if token.startswith("Bearer "):
+                    token = token[7:]
+                
+                # Decode and verify
+                payload = jwt.decode(
+                    token,
+                    self.settings.SECRET_KEY,
+                    algorithms=[self.settings.ALGORITHM]
+                )
+                
+                # Validate required claims
+                if not payload.get("sub"):
+                    raise JWTError("Token missing required 'sub' claim")
+                
+                if not payload.get("type"):
+                    raise JWTError("Token missing required 'type' claim")
+                
+                # Validate token type if expected type is provided
+                if expected_type and payload["type"] != expected_type:
+                    raise JWTError(f"Invalid token type. Expected {expected_type}, got {payload['type']}")
+                
+                # Validate issuer
+                if payload.get("iss") != self.settings.TOKEN_ISSUER:
+                    raise JWTError("Invalid token issuer")
+                
+                # Check revocation
+                is_revoked = await self.check_token_revocation(token)
+                if is_revoked:
+                    raise JWTError("Token has been revoked")
+                
+                # Log successful verification
+                logger.debug(
+                    "Token verified successfully",
+                    extra={
+                        "user_id": payload["sub"],
+                        "token_type": payload["type"],
+                        "jti": payload.get("jti")
+                    }
+                )
+                
+                SecurityLogging.log_auth_event(
+                    "token_verified",
+                    user_id=payload["sub"],
+                    token_type=payload["type"],
+                    jti=payload.get("jti")
+                )
+                
+                return payload
+                
+            except jwt.ExpiredSignatureError:
+                SecurityLogging.log_auth_event(
+                    "token_expired",
+                    user_id=payload.get("sub") if 'payload' in locals() else None,
+                    token_type=payload.get("type") if 'payload' in locals() else None
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has expired",
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
+                
+            except JWTError as e:
+                SecurityLogging.log_auth_event(
+                    "token_verification_failed",
+                    error=str(e)
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=str(e),
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
+                
+            except Exception as e:
+                SecurityLogging.log_auth_event(
+                    "token_verification_error",
+                    error=str(e)
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Could not validate credentials",
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
 
     async def revoke_token(self, token: str) -> bool:
         """Revoke a JWT token"""
@@ -721,5 +730,23 @@ async def start_cleanup_task(app: FastAPI) -> None:
     """Start the cleanup task when the application starts"""
     auth_service = await get_auth_service()
     asyncio.create_task(setup_cleanup_task(auth_service))
+    
+    
+async def get_token_from_request(request: Request) -> str:
+    # Try Authorization header first
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        return auth_header
+        
+    # Try cookie next
+    access_token = request.cookies.get("access_token")
+    if access_token and access_token.startswith("Bearer "):
+        return access_token
+        
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Bearer"}
+    )    
            
             

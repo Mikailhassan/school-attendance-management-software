@@ -5,6 +5,7 @@ from typing import List, Optional
 from datetime import date
 from app.schemas.enums import UserRole
 from app.services.email_service import EmailService
+import re
 from app.core.exceptions import DuplicateSchoolException
 from app.models import (
     School, Class, Stream, Session, User, Student, Parent,
@@ -29,6 +30,7 @@ from app.schemas.school.responses import (
     StreamResponse,
     SchoolResponse    
 )
+from app.schemas.user import UserResponse
 
 from app.schemas.student import StudentRegistrationRequest, StudentUpdate
 from app.core.logging import logger
@@ -37,7 +39,8 @@ from app.core.security import generate_temporary_password, get_password_hash
 from app.core.dependencies import (
     get_current_super_admin,
     get_current_school_admin,
-    verify_school_access
+    verify_school_access,
+    get_current_active_user,
 )
 from app.schemas.auth.requests import UserInDB
 from app.services.school_service import SchoolService
@@ -47,6 +50,41 @@ from app.utils.email_utils import send_email
 email_service = EmailService()
 
 router = APIRouter(tags=["Admin"])
+
+router = APIRouter(tags=["Users"])
+
+@router.get("/me", response_model=UserResponse)
+async def get_current_user_info(
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Get details of currently authenticated user.
+    This endpoint should be called after login to establish the session.
+    """
+    return current_user
+
+@router.get("/me/refresh")
+async def refresh_session(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Refresh the current user session and verify the token is still valid.
+    Frontend can call this periodically to maintain the session.
+    """
+    # Get fresh user data from database
+    user = await db.execute(
+        select(User).where(User.id == current_user.id)
+    )
+    user = user.scalar_one_or_none()
+    
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User session is no longer valid"
+        )
+    
+    return {"status": "ok", "user": UserResponse.from_orm(user)}
 
 # School Management Endpoints
 @router.post("/schools")

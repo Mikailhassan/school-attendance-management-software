@@ -1,29 +1,69 @@
 # app/schemas/attendance/responses.py
-from .base import AttendanceBase
 from pydantic import BaseModel
-from datetime import datetime, date
-from typing import List, Optional
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+from .info import ClassInfo, StreamInfo, StudentInfo, SessionInfo
 
-class Attendance(AttendanceBase):
-    id: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
+class StreamAttendanceResponse(BaseModel):
+    stream_info: StreamInfo
+    students: List[StudentInfo]
+    attendance_date: datetime
+    session_info: SessionInfo
 
     class Config:
         from_attributes = True
 
-class AttendanceResponse(BaseModel):
-    user_id: str
-    check_type: str
-    timestamp: str
-    message: Optional[str] = None
+class ClassAttendanceResponse(BaseModel):
+    class_info: ClassInfo
+    streams: List[StreamAttendanceResponse]
+    attendance_date: datetime
+    session_info: SessionInfo
 
-class WeeklyAttendanceResponse(BaseModel):
-    week_start_date: date
-    week_end_date: date
-    attendance_records: List[Attendance]
+    class Config:
+        from_attributes = True
 
-class PeriodAttendanceResponse(BaseModel):
-    start_date: date
-    end_date: date
-    attendance_records: List[Attendance]
+class StudentAttendanceRecord(BaseModel):
+    date: datetime
+    class_name: str
+    stream_name: str
+    status: str
+    check_in_time: Optional[datetime]
+    check_out_time: Optional[datetime]
+    remarks: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+class AttendanceAnalytics(BaseModel):
+    total_students: int
+    present_count: int
+    absent_count: int
+    late_count: int
+    attendance_rate: float
+    stream_comparison: Dict[str, float]  # Comparison between streams
+    class_comparison: Dict[str, Dict[str, float]]  # Nested comparison by class and stream
+    trend_data: Dict[str, Any]
+
+    class Config:
+        from_attributes = True
+
+class StreamAttendanceSummary(BaseModel):
+    stream_info: StreamInfo
+    total_sessions: int
+    average_attendance_rate: float
+    attendance_by_status: Dict[str, int]
+    student_records: List[Dict[str, Any]]
+
+    class Config:
+        from_attributes = True
+
+class ClassAttendanceSummary(BaseModel):
+    class_info: ClassInfo
+    streams: List[StreamAttendanceSummary]
+    total_sessions: int
+    average_attendance_rate: float
+    attendance_by_status: Dict[str, int]
+    stream_comparison: Dict[str, float]
+
+    class Config:
+        from_attributes = True

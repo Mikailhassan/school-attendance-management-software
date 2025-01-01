@@ -12,7 +12,7 @@ class CookieConfig:
     ACCESS_TOKEN_KEY = "access_token"
     REFRESH_TOKEN_KEY = "refresh_token"
     TOKEN_PREFIX = "Bearer"
-    DEFAULT_REFRESH_PATH = "/api/auth/refresh"
+    DEFAULT_REFRESH_PATH = "/api/v1/auth/refresh-token"  # Updated path
     ROOT_PATH = "/"
 
 def get_cookie_settings(request: Request, is_refresh_token: bool = False) -> Dict[str, Any]:
@@ -38,6 +38,7 @@ def get_cookie_settings(request: Request, is_refresh_token: bool = False) -> Dic
             "path": CookieConfig.DEFAULT_REFRESH_PATH if is_refresh_token else CookieConfig.ROOT_PATH
         }
         
+        logger.debug(f"Cookie settings generated for {host}: {settings}")
         return settings
     except Exception as e:
         logger.error(f"Error getting cookie settings: {str(e)}")
@@ -87,7 +88,8 @@ def set_auth_cookies(
             **access_settings
         )
         
-        # Set refresh token cookie
+        # Set refresh token cookie with explicit domain and path
+        refresh_settings["path"] = CookieConfig.DEFAULT_REFRESH_PATH  # Ensure correct refresh path
         response.set_cookie(
             key=CookieConfig.REFRESH_TOKEN_KEY,
             value=f"{CookieConfig.TOKEN_PREFIX} {refresh_token}",
@@ -96,10 +98,18 @@ def set_auth_cookies(
             **refresh_settings
         )
         
-        logger.debug("Authentication cookies set successfully")
+        logger.debug(
+            "Auth cookies set successfully",
+            extra={
+                "access_expiration": access_expiration.isoformat(),
+                "refresh_expiration": refresh_expiration.isoformat(),
+                "access_path": access_settings["path"],
+                "refresh_path": refresh_settings["path"]
+            }
+        )
         
     except Exception as e:
-        logger.error(f"Error setting auth cookies: {str(e)}")
+        logger.error(f"Error setting auth cookies: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail="Error setting authentication cookies"
@@ -118,6 +128,10 @@ def clear_auth_cookies(response: Response, request: Request) -> None:
         access_settings = get_cookie_settings(request, is_refresh_token=False)
         refresh_settings = get_cookie_settings(request, is_refresh_token=True)
         
+        # Ensure correct paths when clearing
+        access_settings["path"] = CookieConfig.ROOT_PATH
+        refresh_settings["path"] = CookieConfig.DEFAULT_REFRESH_PATH
+        
         # Clear access token
         response.delete_cookie(
             key=CookieConfig.ACCESS_TOKEN_KEY,
@@ -130,11 +144,17 @@ def clear_auth_cookies(response: Response, request: Request) -> None:
             **refresh_settings
         )
         
-        logger.debug("Authentication cookies cleared successfully")
+        logger.debug(
+            "Auth cookies cleared successfully",
+            extra={
+                "access_path": access_settings["path"],
+                "refresh_path": refresh_settings["path"]
+            }
+        )
         
     except Exception as e:
-        logger.error(f"Error clearing auth cookies: {str(e)}")
-        # Don't raise an exception here as this is typically called during cleanup
+        logger.error(f"Error clearing auth cookies: {str(e)}", exc_info=True)
+        # Log error but don't raise exception during cleanup
 
 def get_token_from_cookies(request: Request, token_key: str) -> Optional[str]:
     """
@@ -150,15 +170,19 @@ def get_token_from_cookies(request: Request, token_key: str) -> Optional[str]:
     try:
         cookie_value = request.cookies.get(token_key)
         if not cookie_value:
+            logger.debug(f"No cookie found for key: {token_key}")
             return None
             
         if cookie_value.startswith(f"{CookieConfig.TOKEN_PREFIX} "):
-            return cookie_value[len(f"{CookieConfig.TOKEN_PREFIX} "):]
+            token = cookie_value[len(f"{CookieConfig.TOKEN_PREFIX} "):]
+            logger.debug(f"Token extracted successfully from cookie: {token_key}")
+            return token
             
+        logger.debug(f"Cookie value found but no Bearer prefix: {token_key}")
         return cookie_value
         
     except Exception as e:
-        logger.error(f"Error extracting token from cookies: {str(e)}")
+        logger.error(f"Error extracting token from cookies: {str(e)}", exc_info=True)
         return None
 
 def validate_cookie_domain(request: Request, allowed_domains: Optional[List[str]] = None) -> bool:
@@ -180,8 +204,10 @@ def validate_cookie_domain(request: Request, allowed_domains: Optional[List[str]
         if host in ["localhost", "127.0.0.1"]:
             return True
             
-        return host in domains
+        is_valid = host in domains
+        logger.debug(f"Cookie domain validation: {host} -> {is_valid}")
+        return is_valid
         
     except Exception as e:
-        logger.error(f"Error validating cookie domain: {str(e)}")
+        logger.error(f"Error validating cookie domain: {str(e)}", exc_info=True)
         return False

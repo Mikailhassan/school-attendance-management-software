@@ -1,13 +1,14 @@
+# app/schemas/attendance/base.py
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
 
 class AttendanceBase(BaseModel):
-    user_id: int
-    school_id: int
-    check_in_time: datetime
-    check_out_time: Optional[datetime] = None
-    is_present: bool = False
+    status: str  # 'Present', 'Absent', 'Late'
+    check_in_time: Optional[datetime]
+    check_out_time: Optional[datetime]
+    remarks: Optional[str]
 
     class Config:
         from_attributes = True
+

@@ -160,6 +160,16 @@ def get_current_role_user(role: str) -> Callable[[UserInDB], Awaitable[UserInDB]
         return current_user
     return role_dependency
 
+async def verify_teacher(current_user: UserInDB = Depends(get_current_active_user)) -> UserInDB:
+    """Verify that the current user is a teacher."""
+    if current_user.role != 'teacher':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User does not have teacher privileges"
+        )
+    return current_user
+
+
 # Role-specific dependencies
 get_current_super_admin = get_current_role_user('super_admin')
 get_current_school_admin = get_current_role_user('school_admin')
