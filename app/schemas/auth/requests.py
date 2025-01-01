@@ -67,3 +67,20 @@ class UserInDB(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class RateLimitExceeded(Exception):
+    """Raised when rate limit is exceeded"""
+    pass
+
+class AccountLockedException(Exception):
+    """Raised when account is locked"""
+    pass
+
+class InvalidCredentialsException(Exception):
+    """Raised when credentials are invalid"""
+    pass
+
+class AuthenticationError(Exception):
+    """Raised for general authentication errors"""
+    pass        

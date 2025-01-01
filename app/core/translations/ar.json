@@ -1,0 +1,55 @@
+{
+    "auth": {
+        "login": "تسجيل الدخول",
+        "logout": "تسجيل الخروج",
+        "register": "تسجيل",
+        "forgot_password": "نسيت كلمة المرور",
+        "reset_password": "إعادة تعيين كلمة المرور",
+        "change_password": "تغيير كلمة المرور",
+        "email": "البريد الإلكتروني",
+        "password": "كلمة المرور",
+        "confirm_password": "تأكيد كلمة المرور",
+        "remember_me": "تذكرني",
+        "submit": "إرسال"
+    },
+    "errors": {
+        "rate_limit_exceeded": "محاولات كثيرة جداً. يرجى المحاولة لاحقاً.",
+        "account_locked": "تم قفل حسابك. يرجى الاتصال بالدعم.",
+        "invalid_credentials": "بريد إلكتروني أو كلمة مرور غير صحيحة.",
+        "auth_error": "فشل المصادقة.",
+        "config_error": "خطأ في إعدادات النظام.",
+        "required_field": "هذا الحقل مطلوب.",
+        "invalid_email": "يرجى إدخال عنوان بريد إلكتروني صحيح.",
+        "password_mismatch": "كلمات المرور غير متطابقة."
+    },
+    "attendance": {
+        "mark_attendance": "تسجيل الحضور",
+        "view_attendance": "عرض الحضور",
+        "present": "حاضر",
+        "absent": "غائب",
+        "late": "متأخر",
+        "excused": "معذور",
+        "date": "التاريخ",
+        "time": "الوقت",
+        "status": "الحالة",
+        "remarks": "ملاحظات"
+    },
+    "dashboard": {
+        "welcome": "مرحباً",
+        "total_students": "إجمالي الطلاب",
+        "present_today": "الحاضرون اليوم",
+        "absent_today": "الغائبون اليوم",
+        "attendance_rate": "معدل الحضور",
+        "recent_activity": "النشاط الأخير"
+    },
+    "navigation": {
+        "home": "الرئيسية",
+        "dashboard": "لوحة التحكم",
+        "students": "الطلاب",
+        "teachers": "المعلمون",
+        "parents": "أولياء الأمور",
+        "reports": "التقارير",
+        "settings": "الإعدادات",
+        "profile": "الملف الشخصي"
+    }
+}

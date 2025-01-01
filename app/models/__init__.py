@@ -6,10 +6,12 @@ from .teacher_attendance import TeacherAttendance
 from .student_attendance import StudentAttendance
 from .fingerprint import Fingerprint
 from .attendance_base import AttendanceBase
-from .user import User, RevokedToken
+from .user import User, RevokedToken, FailedLoginAttempt
 from .parent import Parent
 from .sessions import Session
 from .student import Student  # Add this import
+
+
 
 __all__ = [
     'Base',
@@ -26,4 +28,5 @@ __all__ = [
     'Parent',
     'Session',
     'Student'  # Add this to __all__
+    'FailedLoginAttempt'
 ]

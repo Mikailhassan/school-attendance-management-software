@@ -2,6 +2,7 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from app.schemas.user.role import UserRoleEnum
+from app.schemas.user.responses import UserResponse
 from datetime import datetime
 
 # Base User Response Model (common fields for all user responses)
@@ -20,17 +21,32 @@ class UserBaseResponse(BaseModel):
 
 # Response for a successful user login (includes a token for authentication)
 class LoginResponse(BaseModel):
-    access_token: str  # The access token generated after a successful login
-    refresh_token: str  # The refresh token for obtaining new access tokens
-    token_type: str = "bearer"  # Type of the token (Bearer)
-    role: UserRoleEnum  # User's role from the token
-    user: UserBaseResponse  # User details included in the response
-
+    """Response model for successful login"""
+    user: UserResponse
+    access_token: str
+    refresh_token: str
+    
     class Config:
         from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "user": {
+                    "id": 1,
+                    "email": "user@example.com",
+                    "full_name": "John Doe",
+                    "role": "teacher",
+                    "is_active": True,
+                    "phone": "+1-555-123-4567",
+                    "school_id": 1,
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "last_login": "2024-12-31T00:00:00Z"
+                },
+                "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+                "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
+            }
+        }
 
-    class Config:
-        from_attributes = True
+    
 
 # Response for a successful user registration (after creating a new user)
 class RegisterResponse(UserBaseResponse):

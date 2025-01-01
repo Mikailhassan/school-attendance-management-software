@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-
+from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from app.utils import cookie_utils
-
+from app.core.errors import RateLimitExceeded, AccountLockedException, InvalidCredentialsException, AuthenticationError, ConfigurationError, get_error_message
 from app.services import AuthService, RegistrationService, EmailService, SchoolService
 from app.schemas import (
     RegisterRequest,
@@ -27,17 +27,18 @@ from app.core.dependencies import (
 )
 from app.models import User
 from app.core.config import settings
+from app.core.logging import logger
 
 router = APIRouter(tags=["Authentication"])
 
 def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
     return AuthService(db=db)
-
-def get_registration_service(db: Session = Depends(get_db)) -> RegistrationService:
+def get_registration_service(db: AsyncSession = Depends(get_db)) -> RegistrationService:
     return RegistrationService(db=db)
 
-def get_email_service(db: Session = Depends(get_db)) -> EmailService:
+def get_email_service(db: AsyncSession = Depends(get_db)) -> EmailService:
     return EmailService(db=db)
+
 
 def get_cookie_settings(request: Request) -> Dict[str, Any]:
     """Get appropriate cookie settings based on environment"""
@@ -136,36 +137,162 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from typing import Annotated
+from app.core.errors import (
+    AuthenticationError,
+    RateLimitExceeded,
+    ConfigurationError,
+    InvalidCredentialsException,
+    AccountLockedException
+)
+from app.core.logging import logger
+from app.schemas import LoginRequest, LoginResponse
+from app.services.auth_service import AuthService, get_auth_service
+
+router = APIRouter()
+
+from fastapi import Depends, HTTPException, Request, Response, status
+from fastapi.security import HTTPBearer
+from typing import Annotated
+from sqlalchemy.ext.asyncio import AsyncSession
+import logging
+
+logger = logging.getLogger(__name__)
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: Request,
-    credentials: LoginRequest,  # Changed from OAuth2PasswordRequestForm to LoginRequest
-    response: Response = Response(),
-    language: str = 'en',
+    credentials: LoginRequest,
+    response: Response,
+    language: Annotated[str, 'en'] = 'en',
+    db: AsyncSession = Depends(get_db),
     auth_service: AuthService = Depends(get_auth_service)
 ) -> LoginResponse:
+    """
+    Authenticate user and generate session tokens.
+    
+    Args:
+        request: FastAPI request object
+        credentials: Login credentials (email and password)
+        response: FastAPI response object for cookie setting
+        language: Language code for error messages
+        db: Database session
+        auth_service: Authentication service instance
+        
+    Returns:
+        LoginResponse containing user data and tokens
+        
+    Raises:
+        HTTPException: Various HTTP errors based on authentication failure
+    """
     try:
-        if not request:
+        # Basic validation with more detailed error message
+        if not credentials.password or not credentials.password.strip():
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Request object is required"
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=get_error_message("empty_password", language)
             )
 
-        # Pass both response AND request to authenticate_user
-        auth_result = await auth_service.authenticate_user(
-            credentials.email,  
-            credentials.password,
-            response,
-            request,
-            language
+        if not credentials.email or not credentials.email.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=get_error_message("empty_email", language)
+            )
+
+        # Authenticate user with transaction handling
+        async with db.begin():
+            auth_result = await auth_service.authenticate_user(
+                email=credentials.email.lower().strip(),  # Normalize email
+                password=credentials.password,
+                response=response,
+                request=request,
+                language=language
+            )
+            
+            logger.info(
+                "Login successful",
+                extra={
+                    "email": credentials.email,
+                    "ip": request.client.host,
+                    "user_agent": request.headers.get("user-agent")
+                }
+            )
+            return auth_result
+
+    except RateLimitExceeded as e:
+        logger.warning(
+            "Rate limit exceeded",
+            extra={
+                "ip": request.client.host,
+                "email": credentials.email
+            }
         )
-        
-        return auth_result
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=get_error_message("rate_limit_exceeded", language),
+            headers={"Retry-After": "300"}
+        )
+
+    except AccountLockedException as e:
+        logger.warning(
+            "Account locked",
+            extra={
+                "email": credentials.email,
+                "ip": request.client.host
+            }
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+            headers={"Retry-After": str(auth_service.lockout_duration_minutes * 60)}
+        )
+
+    except InvalidCredentialsException as e:
+        logger.info(
+            "Invalid credentials",
+            extra={
+                "email": credentials.email,
+                "ip": request.client.host
+            }
+        )
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=get_error_message("invalid_credentials", language),
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    except (AuthenticationError, ConfigurationError) as e:
+        logger.error(
+            "Authentication error",
+            extra={
+                "error": str(e),
+                "email": credentials.email,
+                "ip": request.client.host
+            }
+        )
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"} if isinstance(e, AuthenticationError) else None
+        )
 
     except Exception as e:
+        logger.error(
+            "Unexpected login error",
+            extra={
+                "error": str(e),
+                "email": credentials.email,
+                "ip": request.client.host
+            },
+            exc_info=True
+        )
+        await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=get_error_message("unexpected_error", language)
         )
 
 @router.post("/password-reset")

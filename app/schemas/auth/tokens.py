@@ -9,8 +9,11 @@ class Token(BaseModel):
 
 # Token Data model that contains user-related information embedded in the token
 class TokenData(BaseModel):
-    user_id: Optional[int] = None  # User ID embedded in the token (optional)
-    role: Optional[UserRole] = None  # Role of the user (optional, can be None if not set)
+    sub: str  # Required for JWT standard claims
+    email: str
+    role: UserRole
+    school_id: Optional[str] = None
+    user_id: Optional[int] = None
 
 # Token Refresh Request, to send the refresh token to refresh the session
 class TokenRefreshRequest(BaseModel):

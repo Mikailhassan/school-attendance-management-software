@@ -4,6 +4,7 @@ from sqlalchemy.orm import relationship, declared_attr
 from .base import TenantModel
 from app.schemas.enums import UserRole
 
+
 class User(TenantModel):
     __tablename__ = "users"
 
@@ -83,6 +84,11 @@ class User(TenantModel):
     def teacher_attendances(cls):
         return relationship("TeacherAttendance", back_populates="user")
 
+    # Failed login attempts relationship
+    @declared_attr
+    def failed_login_attempts(cls):
+        return relationship("FailedLoginAttempt", back_populates="user", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<User(id={self.id}, name={self.name}, role={self.role})>"
 
@@ -112,3 +118,36 @@ class RevokedToken(TenantModel):
 
     def __repr__(self):
         return f"<RevokedToken(id={self.id}, jti={self.jti}, revoked_at={self.revoked_at})>"
+
+
+class FailedLoginAttempt(TenantModel):
+    __tablename__ = "failed_login_attempts"
+
+    @declared_attr
+    def id(cls):
+        return Column(Integer, primary_key=True, index=True)
+
+    @declared_attr
+    def email(cls):
+        return Column(String, nullable=False, index=True)
+
+    @declared_attr
+    def timestamp(cls):
+        return Column(DateTime(timezone=True), server_default=func.now())
+
+    @declared_attr
+    def ip_address(cls):
+        return Column(String, nullable=True)
+
+    # Add user_id foreign key
+    @declared_attr
+    def user_id(cls):
+        return Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Add user relationship
+    @declared_attr
+    def user(cls):
+        return relationship("User", back_populates="failed_login_attempts")
+
+    def __repr__(self):
+        return f"<FailedLoginAttempt(id={self.id}, email={self.email}, timestamp={self.timestamp})>"

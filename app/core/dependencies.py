@@ -6,7 +6,7 @@ from typing import Tuple, Set, Callable, Awaitable, Optional
 import os
 from dotenv import load_dotenv
 
-from app.models.user import User
+from app.models.user import User 
 from app.models.school import School
 from app.core.security import verify_token
 from app.schemas.auth.requests import UserInDB
@@ -56,7 +56,7 @@ async def get_db() -> AsyncSession:
 # Service providers
 async def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
     """Provide AuthService instance"""
-    return AuthService(db=db)
+    return AuthService(db)  # Fixed: Direct instantiation instead of using create()
 
 async def get_registration_service(db: AsyncSession = Depends(get_db)) -> RegistrationService:
     """Provide RegistrationService instance"""
@@ -125,6 +125,7 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Authentication error: {str(e)}"
         )
+
 async def get_current_active_user(
     current_user: UserInDB = Depends(get_current_user)
 ) -> UserInDB:

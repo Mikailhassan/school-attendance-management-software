@@ -16,7 +16,15 @@ class Settings(BaseSettings):
     DATABASE_URL: str = Field(..., env="DATABASE_URL")
 
     PRODUCTION: bool = Field(default=False, env="PRODUCTION")
-    
+
+    RATE_LIMIT_MAX_REQUESTS: int = 100
+    RATE_LIMIT_TIME_WINDOW: int = 60  
+
+    # Authentication Settings
+    FAILED_ATTEMPTS: int = 5 
+    DURATION_MINUTES: int = 30  
+
+  
     # Authentication Settings
     SECRET_KEY: str = Field(..., env="SECRET_KEY")
     ALGORITHM: str = "HS256"

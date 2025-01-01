@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_, or_, desc, update
 from typing import List, Optional, Dict, Any
@@ -21,7 +21,8 @@ from app.core.logging import logger
 from app.core.exceptions import (
     SchoolNotFoundException,
     DuplicateSchoolException,
-    InvalidOperationException
+    InvalidOperationException,
+    
 )
 
 class SchoolService:
@@ -61,16 +62,13 @@ class SchoolService:
             if existing_phone.scalar_one_or_none():
                 raise DuplicateSchoolException("School with this phone number already exists")
 
-        # Validate class range if provided
-        if school_data.class_range:
-            lower_bound = school_data.class_range.get('lower_bound')
-            upper_bound = school_data.class_range.get('upper_bound')
-            
-            if lower_bound is not None and upper_bound is not None:
-                if lower_bound > upper_bound:
-                    raise ValueError("Lower bound cannot be greater than upper bound in class range")
-                if lower_bound < 1:
-                    raise ValueError("Lower bound cannot be less than 1")
+        # Check for duplicate registration number if provided
+        if school_data.registration_number:
+            existing_reg = await self.db.execute(
+                select(School).where(School.registration_number == school_data.registration_number)
+            )
+            if existing_reg.scalar_one_or_none():
+                raise DuplicateSchoolException("School with this registration number already exists")  
 
     async def generate_registration_number(self) -> str:
         """
@@ -127,83 +125,99 @@ class SchoolService:
     
     async def create_school(self, school_data: SchoolCreateRequest, background_tasks: BackgroundTasks) -> dict:
         """Create a new school with admin account"""
-        await self.validate_school_data(school_data)
-    
-        registration_number = await self.generate_registration_number()
-    
-   
-        # Generate admin temporary password
-        temp_password = generate_temporary_password()
-        
-        website = str(school_data.website) if school_data.website else None
-
-        # Create school instance
-        new_school = School(
-            registration_number=registration_number,
-            name=school_data.name,
-            email=school_data.email,
-            phone=school_data.phone,
-            address=school_data.address,
-            website=website, 
-            school_type=school_data.school_type,
-            county=school_data.county,
-            postal_code=school_data.postal_code,
-            class_system=school_data.class_system,
-            class_range=school_data.class_range,
-            extra_info=school_data.extra_info,
-            is_active=True,
-            created_at=datetime.utcnow()
-        )
-        
-        # Create admin instance
-        school_admin = User(
-            email=school_data.email,
-            name=f"{school_data.name} Administrator",
-            password_hash=get_password_hash(admin_password),
-            role=UserRole.SCHOOL_ADMIN,
-            is_active=True,
-            phone=school_data.phone,
-            created_at=datetime.utcnow()
-        )
-
         try:
-            # Add school and get its ID
-            self.db.add(new_school)
-            await self.db.flush()
+            await self.validate_school_data(school_data)
+        
+            registration_number = await self.generate_registration_number()
+            temp_password = generate_temporary_password()
             
-            # Set school ID for admin and add admin
-            school_admin.school_id = new_school.id
-            self.db.add(school_admin)
+            # Convert the entire school_data to dict and process it
+            school_dict = school_data.model_dump()
             
-            # Commit the transaction
-            await self.db.commit()
-            await self.db.refresh(new_school)
-            
-            # Send welcome email using EmailService
-            email_sent = await self.email_service.send_school_admin_credentials(
+            # Convert class_range to dict explicitly
+            if isinstance(school_dict['class_range'], dict):
+                class_range_data = school_dict['class_range']
+            else:
+                class_range_data = school_dict['class_range'].model_dump()
+
+            # Remove school_admin from school creation data
+            admin_data = school_dict.pop('school_admin')
+
+            # Create school instance
+            new_school = School(
+                registration_number=registration_number,
+                name=school_data.name,
                 email=school_data.email,
+                phone=school_data.phone,
+                address=school_data.address,
+                website=str(school_data.website) if school_data.website else None,
+                school_type=school_data.school_type,
+                county=school_data.county,
+                postal_code=school_data.postal_code,
+                class_system=school_data.class_system,
+                class_range=class_range_data,  # Use the processed dict
+                extra_info=school_data.extra_info,
+                is_active=True,
+                created_at=datetime.utcnow()
+            )
+            
+            # Create admin instance
+            school_admin = User(
+                email=admin_data['email'],
                 name=f"{school_data.name} Administrator",
-                password=temp_password,
-                school_name=school_data.name
+                password_hash=get_password_hash(temp_password),
+                role=UserRole.SCHOOL_ADMIN,
+                is_active=True,
+                phone=admin_data['phone'],
+                created_at=datetime.utcnow()
             )
 
-            if not email_sent:
-                logger.warning(f"Failed to send welcome email to school: {school_data.name}")
+            # Database operations
+            try:
+                self.db.add(new_school)
+                await self.db.flush()
+                
+                school_admin.school_id = new_school.id
+                self.db.add(school_admin)
+                
+                await self.db.commit()
+                await self.db.refresh(new_school)
+                
+                # Send welcome email
+                email_sent = await self.email_service.send_school_admin_credentials(
+                    email=admin_data['email'],
+                    name=f"{school_data.name} Administrator",
+                    password=temp_password,
+                    school_name=school_data.name
+                )
 
-            logger.info(f"Created new school: {school_data.name} with registration number: {registration_number}")
-            
-            return {
-                "message": "School and admin account created successfully",
-                "registration_number": registration_number,
-                "school_id": new_school.id,
-                "admin_email": school_data.email,
-                "email_sent": email_sent
-            }
-            
+                if not email_sent:
+                    logger.warning(f"Failed to send welcome email to school: {school_data.name}")
+
+                logger.info(f"Created new school: {school_data.name} with registration number: {registration_number}")
+                
+                return {
+                    "message": "School and admin account created successfully",
+                    "registration_number": registration_number,
+                    "school_id": new_school.id,
+                    "admin_email": admin_data['email'],
+                    "email_sent": email_sent
+                }
+                
+            except Exception as e:
+                await self.db.rollback()
+                logger.error(f"Database error while creating school: {str(e)}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Database error: {str(e)}"
+                )
+                
         except Exception as e:
-            await self.db.rollback()
-            logger.error(f"Failed to create school: {str(e)}")
-            raise
+            logger.error(f"Error creating school: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e)
+            )
 
     async def get_school_by_registration(self, registration_number: str) -> School:
         """Get school by registration number"""

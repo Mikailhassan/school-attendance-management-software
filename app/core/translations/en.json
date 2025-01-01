@@ -1,0 +1,55 @@
+{
+    "auth": {
+        "login": "Login",
+        "logout": "Logout",
+        "register": "Register",
+        "forgot_password": "Forgot Password",
+        "reset_password": "Reset Password",
+        "change_password": "Change Password",
+        "email": "Email",
+        "password": "Password",
+        "confirm_password": "Confirm Password",
+        "remember_me": "Remember Me",
+        "submit": "Submit"
+    },
+    "errors": {
+        "rate_limit_exceeded": "Too many attempts. Please try again later.",
+        "account_locked": "Your account has been locked. Please contact support.",
+        "invalid_credentials": "Invalid email or password.",
+        "auth_error": "Authentication failed.",
+        "config_error": "System configuration error.",
+        "required_field": "This field is required.",
+        "invalid_email": "Please enter a valid email address.",
+        "password_mismatch": "Passwords do not match."
+    },
+    "attendance": {
+        "mark_attendance": "Mark Attendance",
+        "view_attendance": "View Attendance",
+        "present": "Present",
+        "absent": "Absent",
+        "late": "Late",
+        "excused": "Excused",
+        "date": "Date",
+        "time": "Time",
+        "status": "Status",
+        "remarks": "Remarks"
+    },
+    "dashboard": {
+        "welcome": "Welcome",
+        "total_students": "Total Students",
+        "present_today": "Present Today",
+        "absent_today": "Absent Today",
+        "attendance_rate": "Attendance Rate",
+        "recent_activity": "Recent Activity"
+    },
+    "navigation": {
+        "home": "Home",
+        "dashboard": "Dashboard",
+        "students": "Students",
+        "teachers": "Teachers",
+        "parents": "Parents",
+        "reports": "Reports",
+        "settings": "Settings",
+        "profile": "Profile"
+    }
+}
