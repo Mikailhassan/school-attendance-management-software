@@ -141,16 +141,6 @@ async def register(
         )
 
 
-router = APIRouter()
-
-from fastapi import Depends, HTTPException, Request, Response, status
-from fastapi.security import HTTPBearer
-from typing import Annotated
-from sqlalchemy.ext.asyncio import AsyncSession
-import logging
-
-logger = logging.getLogger(__name__)
-
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: Request,
