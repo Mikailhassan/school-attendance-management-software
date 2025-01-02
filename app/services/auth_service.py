@@ -296,23 +296,15 @@ class AuthService:
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Error clearing failed attempts: {str(e)}")
-
-    async def create_token(
-        self,
-        data: Dict[str, Any], 
-        token_type: str = "access"
-    ) -> str:
-        """Create JWT token"""
+    async def create_token(self, data: Dict[str, Any], token_type: str = "access") -> str:
         try:
             to_encode = data.copy()
             
-            # Set expiration time
             if token_type == "access":
                 expire = datetime.now(timezone.utc) + timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-            else:  # refresh token
+            else:
                 expire = datetime.now(timezone.utc) + timedelta(days=self.settings.REFRESH_TOKEN_EXPIRE_DAYS)
             
-            # Add standard JWT claims
             to_encode.update({
                 "exp": expire,
                 "iat": datetime.now(timezone.utc),
@@ -320,12 +312,11 @@ class AuthService:
                 "jti": str(uuid.uuid4())
             })
             
-            # Log token creation (without sensitive data)
+            # Removed sensitive logging, only log non-sensitive metadata
             logger.debug(
                 "Creating token",
                 extra={
                     "token_type": token_type,
-                    "user_id": to_encode.get("sub"),
                     "expiry": expire.isoformat()
                 }
             )
@@ -337,107 +328,79 @@ class AuthService:
             )
             
         except Exception as e:
-            logger.error(f"Error creating {token_type} token: {str(e)}")
-            raise AuthenticationError(f"Could not create {token_type} token")
-    async def verify_token(
-            self,
-            token: str,
-            expected_type: Optional[str] = None
-        ) -> Dict[str, Any]:
-            """
-            Verify and decode JWT token
+            logger.error("Token creation error", extra={"error_type": type(e).__name__})
+            raise AuthenticationError("Token creation failed")
+
+    async def verify_token(self, token: str, expected_type: Optional[str] = None) -> Dict[str, Any]:
+        try:
+            if token.startswith("Bearer "):
+                token = token[7:]
             
-            Args:
-                token: JWT token to verify
-                expected_type: Optional expected token type ("access" or "refresh")
-                
-            Returns:
-                Dict[str, Any]: Decoded token payload
-            """
-            try:
-                # Clean token
-                if token.startswith("Bearer "):
-                    token = token[7:]
-                
-                # Decode and verify
-                payload = jwt.decode(
-                    token,
-                    self.settings.SECRET_KEY,
-                    algorithms=[self.settings.ALGORITHM]
-                )
-                
-                # Validate required claims
-                if not payload.get("sub"):
-                    raise JWTError("Token missing required 'sub' claim")
-                
-                if not payload.get("type"):
-                    raise JWTError("Token missing required 'type' claim")
-                
-                # Validate token type if expected type is provided
-                if expected_type and payload["type"] != expected_type:
-                    raise JWTError(f"Invalid token type. Expected {expected_type}, got {payload['type']}")
-                
-                # Validate issuer
-                if payload.get("iss") != self.settings.TOKEN_ISSUER:
-                    raise JWTError("Invalid token issuer")
-                
-                # Check revocation
-                is_revoked = await self.check_token_revocation(token)
-                if is_revoked:
-                    raise JWTError("Token has been revoked")
-                
-                # Log successful verification
-                logger.debug(
-                    "Token verified successfully",
-                    extra={
-                        "user_id": payload["sub"],
-                        "token_type": payload["type"],
-                        "jti": payload.get("jti")
-                    }
-                )
-                
-                SecurityLogging.log_auth_event(
-                    "token_verified",
-                    user_id=payload["sub"],
-                    token_type=payload["type"],
-                    jti=payload.get("jti")
-                )
-                
-                return payload
-                
-            except jwt.ExpiredSignatureError:
-                SecurityLogging.log_auth_event(
-                    "token_expired",
-                    user_id=payload.get("sub") if 'payload' in locals() else None,
-                    token_type=payload.get("type") if 'payload' in locals() else None
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token has expired",
-                    headers={"WWW-Authenticate": "Bearer"}
-                )
-                
-            except JWTError as e:
-                SecurityLogging.log_auth_event(
-                    "token_verification_failed",
-                    error=str(e)
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=str(e),
-                    headers={"WWW-Authenticate": "Bearer"}
-                )
-                
-            except Exception as e:
-                SecurityLogging.log_auth_event(
-                    "token_verification_error",
-                    error=str(e)
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Could not validate credentials",
-                    headers={"WWW-Authenticate": "Bearer"}
-                )
+            payload = jwt.decode(
+                token,
+                self.settings.SECRET_KEY,
+                algorithms=[self.settings.ALGORITHM]
+            )
+            
+            # Validate claims
+            self._validate_token_claims(payload, expected_type)
+            
+            # Check revocation
+            if await self.check_token_revocation(token):
+                raise JWTError("Token has been revoked")
+            
+            # Only log non-sensitive data
+            logger.debug(
+                "Token verified",
+                extra={
+                    "token_type": payload.get("type"),
+                    "exp": payload.get("exp")
+                }
+            )
+            
+            return payload
+            
+        except jwt.ExpiredSignatureError:
+            logger.warning("Token expired")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has expired"
+            )
+            
+        except jwt.InvalidSignatureError:
+            logger.warning("Invalid token signature")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+            
+        except jwt.DecodeError:
+            logger.warning("Token decode error")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token format"
+            )
+            
+        except Exception as e:
+            logger.error("Token verification error", extra={"error_type": type(e).__name__})
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials"
+            )
+
+    def _validate_token_claims(self, payload: Dict[str, Any], expected_type: Optional[str]) -> None:
+        """Separate method for token claims validation"""
+        if not payload.get("sub"):
+            raise JWTError("Missing user identifier")
+        
+        if not payload.get("type"):
+            raise JWTError("Missing token type")
+        
+        if expected_type and payload["type"] != expected_type:
+            raise JWTError(f"Invalid token type")
+        
+        if payload.get("iss") != self.settings.TOKEN_ISSUER:
+            raise JWTError("Invalid token issuer")
 
     async def revoke_token(self, token: str) -> bool:
         """Revoke a JWT token"""
@@ -490,7 +453,6 @@ class AuthService:
         except Exception as e:
             logger.error(f"Token revocation check error: {str(e)}")
             return True
-
     async def authenticate_user(
         self,
         email: str,
@@ -501,12 +463,6 @@ class AuthService:
     ) -> LoginResponse:
         """Authenticate user and generate tokens"""
         try:
-            # Check rate limit
-            await self.check_rate_limit(request)
-            
-            # Check for account lockout
-            await self.check_account_lockout(email, language)
-            
             # Get user and verify credentials
             user = await self.get_user_by_email(email)
             
@@ -516,32 +472,51 @@ class AuthService:
                     get_error_message("invalid_credentials", language)
                 )
 
-            if not self.verify_password(password, user.password_hash):
+            # Extract all needed user data immediately
+            user_data = {
+                'id': str(user.id),
+                'email': user.email,
+                'role': user.role,
+                'school_id': str(user.school_id) if user.school_id else None,
+                'is_active': user.is_active,
+                'password_hash': user.password_hash
+            }
+            
+            # Store user response data before any potential session closure
+            user_response_data = UserResponse.from_orm(user)
+
+            if not user_data['is_active']:
+                raise AuthenticationError(
+                    get_error_message("account_inactive", language)
+                )
+
+            # Check rate limit
+            await self.check_rate_limit(request)
+            
+            # Check for account lockout
+            await self.check_account_lockout(email, language)
+
+            # Verify password
+            if not self.verify_password(password, user_data['password_hash']):
                 await self.record_failed_attempt(email, request)
                 raise InvalidCredentialsException(
                     get_error_message("invalid_credentials", language)
                 )
 
-            if not user.is_active:
-                raise AuthenticationError(
-                    get_error_message("account_inactive", language)
-                )
-
             # Clear failed attempts on successful login
             await self.clear_failed_attempts(email)
 
-            # Create token data
+            # Create token data using the extracted data
             token_data = TokenData(
-            sub=str(user.id),  
-            email=user.email,
-            role=user.role, 
-            school_id=str(user.school_id) if user.school_id else None,
-            user_id=user.id
+                sub=user_data['id'],
+                email=user_data['email'],
+                role=user_data['role'],
+                school_id=user_data['school_id'],
+                user_id=user_data['id']
             )
-            logger.debug(f"Token data: {token_data.model_dump()}")
 
             # Generate tokens
-            access_token = await self.create_token(token_data.model_dump(), "access")  # Use model_dump() for v2
+            access_token = await self.create_token(token_data.model_dump(), "access")
             refresh_token = await self.create_token(token_data.model_dump(), "refresh")
 
             # Set auth cookies
@@ -552,53 +527,75 @@ class AuthService:
                 refresh_token
             )
 
-            logger.info(f"User authenticated successfully: {email}")
+            # Log success without sensitive data
+            logger.info(
+                "Authentication successful",
+                extra={
+                    "user_id": user_data['id'],
+                    "ip": request.client.host
+                }
+            )
 
             return LoginResponse(
-                user=UserResponse.from_orm(user),
+                user=user_response_data,
                 access_token=access_token,
                 refresh_token=refresh_token
             )
 
         except (RateLimitExceeded, AccountLockedException, 
                 InvalidCredentialsException, AuthenticationError) as e:
-            logger.warning(f"Authentication failed for {email}: {str(e)}")
+            logger.warning(
+                "Authentication failed",
+                extra={
+                    "error_type": type(e).__name__,
+                    "ip": request.client.host
+                }
+            )
             raise
         except Exception as e:
-            logger.error(f"Unexpected authentication error: {str(e)}")
+            logger.error(
+                "Unexpected authentication error",
+                extra={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "ip": request.client.host
+                },
+                exc_info=True
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=get_error_message("authentication_failed", language)
             )
-
-
-
+            
     async def cleanup_expired_data(self) -> None:
         """Cleanup expired tokens and failed login attempts"""
-        try:
-            cutoff_time = datetime.now(timezone.utc)
-            
-            # Delete expired revoked tokens
-            await self.db.execute(
-                delete(RevokedToken).where(
-                    RevokedToken.revoked_at < cutoff_time - timedelta(days=30)
+        async with self.db.begin() as transaction:
+            try:
+                cutoff_time = datetime.now(timezone.utc)
+                
+                # Delete expired revoked tokens
+                await self.db.execute(
+                    delete(RevokedToken).where(
+                        RevokedToken.revoked_at < cutoff_time - timedelta(days=30)
+                    )
                 )
-            )
 
-
-        # Delete expired failed login attempts
-            await self.db.execute(
-                delete(FailedLoginAttempt).where(
-                    FailedLoginAttempt.timestamp < 
-                    cutoff_time - timedelta(minutes=self.settings.LOCKOUT_DURATION_MINUTES)
+                # Delete expired failed login attempts
+                await self.db.execute(
+                    delete(FailedLoginAttempt).where(
+                        FailedLoginAttempt.timestamp < 
+                        cutoff_time - timedelta(minutes=self.settings.LOCKOUT_DURATION_MINUTES)
+                    )
                 )
-            )
-            
-            await self.db.commit()
-            
-        except Exception as e:
-            await self.db.rollback()
-            logger.error(f"Error cleaning up expired data: {str(e)}")
+                
+                await transaction.commit()
+                
+            except Exception as e:
+                await transaction.rollback()
+                logger.error(
+                    "Error cleaning up expired data",
+                    extra={"error_type": type(e).__name__}
+                )
 
     async def refresh_access_token(
         self,

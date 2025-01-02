@@ -139,18 +139,7 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from typing import Annotated
-from app.core.errors import (
-    AuthenticationError,
-    RateLimitExceeded,
-    ConfigurationError,
-    InvalidCredentialsException,
-    AccountLockedException
-)
-from app.core.logging import logger
-from app.schemas import LoginRequest, LoginResponse
-from app.services.auth_service import AuthService, get_auth_service
+
 
 router = APIRouter()
 
@@ -167,136 +156,73 @@ async def login(
     request: Request,
     credentials: LoginRequest,
     response: Response,
-    language: Annotated[str, 'en'] = 'en',
+    language: str = 'en',
     db: AsyncSession = Depends(get_db),
     auth_service: AuthService = Depends(get_auth_service)
 ) -> LoginResponse:
-    """
-    Authenticate user and generate session tokens.
-    
-    Args:
-        request: FastAPI request object
-        credentials: Login credentials (email and password)
-        response: FastAPI response object for cookie setting
-        language: Language code for error messages
-        db: Database session
-        auth_service: Authentication service instance
-        
-    Returns:
-        LoginResponse containing user data and tokens
-        
-    Raises:
-        HTTPException: Various HTTP errors based on authentication failure
-    """
     try:
-        # Basic validation with more detailed error message
-        if not credentials.password or not credentials.password.strip():
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=get_error_message("empty_password", language)
-            )
-
+        # Input validation
         if not credentials.email or not credentials.email.strip():
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=get_error_message("empty_email", language)
             )
 
-        # Authenticate user with transaction handling
-        async with db.begin():
+        if not credentials.password or not credentials.password.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=get_error_message("empty_password", language)
+            )
+
+        # Use a single transaction for the entire authentication process
+        async with db.begin() as transaction:
             auth_result = await auth_service.authenticate_user(
-                email=credentials.email.lower().strip(),  # Normalize email
+                email=credentials.email.lower().strip(),
                 password=credentials.password,
                 response=response,
                 request=request,
                 language=language
             )
-            
-            logger.info(
-                "Login successful",
-                extra={
-                    "email": credentials.email,
-                    "ip": request.client.host,
-                    "user_agent": request.headers.get("user-agent")
-                }
-            )
             return auth_result
 
-    except RateLimitExceeded as e:
-        logger.warning(
-            "Rate limit exceeded",
-            extra={
-                "ip": request.client.host,
-                "email": credentials.email
-            }
-        )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=get_error_message("rate_limit_exceeded", language),
-            headers={"Retry-After": "300"}
-        )
-
-    except AccountLockedException as e:
-        logger.warning(
-            "Account locked",
-            extra={
-                "email": credentials.email,
-                "ip": request.client.host
-            }
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-            headers={"Retry-After": str(auth_service.lockout_duration_minutes * 60)}
-        )
-
-    except InvalidCredentialsException as e:
-        logger.info(
-            "Invalid credentials",
-            extra={
-                "email": credentials.email,
-                "ip": request.client.host
-            }
-        )
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=get_error_message("invalid_credentials", language),
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    except (AuthenticationError, ConfigurationError) as e:
-        logger.error(
-            "Authentication error",
-            extra={
-                "error": str(e),
-                "email": credentials.email,
-                "ip": request.client.host
-            }
-        )
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-            headers={"WWW-Authenticate": "Bearer"} if isinstance(e, AuthenticationError) else None
-        )
-
     except Exception as e:
-        logger.error(
-            "Unexpected login error",
-            extra={
-                "error": str(e),
-                "email": credentials.email,
-                "ip": request.client.host
-            },
-            exc_info=True
-        )
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=get_error_message("unexpected_error", language)
-        )
-
+        # Handle specific exceptions
+        if isinstance(e, RateLimitExceeded):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=get_error_message("rate_limit_exceeded", language),
+                headers={"Retry-After": "300"}
+            )
+        elif isinstance(e, AccountLockedException):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(e),
+                headers={"Retry-After": str(auth_service.settings.LOCKOUT_DURATION_MINUTES * 60)}
+            )
+        elif isinstance(e, InvalidCredentialsException):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=get_error_message("invalid_credentials", language),
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        elif isinstance(e, AuthenticationError):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(e),
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        else:
+            logger.error(
+                "Login error",
+                extra={
+                    "error_type": type(e).__name__,
+                    "ip": request.client.host
+                }
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=get_error_message("unexpected_error", language)
+            )
 @router.post("/password-reset")
 async def request_password_reset(
     email: str,

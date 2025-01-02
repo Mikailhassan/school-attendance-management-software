@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Request
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import select, update
-from typing import List, Optional
+from typing import Dict, Any, Optional,List
+from sqlalchemy.ext.asyncio import AsyncSession 
 from datetime import date
 from app.schemas.enums import UserRole
 from app.services.email_service import EmailService
@@ -33,6 +34,7 @@ from app.schemas.school.responses import (
 from app.schemas.user import UserResponse
 
 from app.schemas.student import StudentRegistrationRequest, StudentUpdate
+from app.services.auth_service import AuthService, get_auth_service
 from app.core.logging import logger
 from app.core.database import get_db
 from app.core.security import generate_temporary_password, get_password_hash
@@ -53,39 +55,67 @@ router = APIRouter(tags=["Admin"])
 
 router = APIRouter(tags=["Users"])
 
+router = APIRouter(tags=["Users"])
+
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
     current_user: User = Depends(get_current_active_user),
 ):
-    """
-    Get details of currently authenticated user.
-    This endpoint should be called after login to establish the session.
-    """
+    """Get details of currently authenticated user."""
     return current_user
 
-@router.get("/me/refresh")
+@router.get("/me/refresh", response_model=Dict[str, Any])
 async def refresh_session(
+    request: Request,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    auth_service: AuthService = Depends(get_auth_service)
 ):
     """
     Refresh the current user session and verify the token is still valid.
-    Frontend can call this periodically to maintain the session.
+    Returns fresh user data and session status.
     """
-    # Get fresh user data from database
-    user = await db.execute(
-        select(User).where(User.id == current_user.id)
-    )
-    user = user.scalar_one_or_none()
-    
-    if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User session is no longer valid"
+    try:
+        # Get fresh user data with relationships
+        query = (
+            select(User)
+            .options(
+                selectinload(User.school),
+                selectinload(User.parent_profile),
+                selectinload(User.teacher_profile),
+                selectinload(User.student_profile)
+            )
+            .where(User.id == current_user.id)
         )
-    
-    return {"status": "ok", "user": UserResponse.from_orm(user)}
+        result = await db.execute(query)
+        user = result.unique().scalar_one_or_none()
 
+        if not user or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User session is no longer valid"
+            )
+
+        # Verify current token
+        token = await auth_service.get_token_from_request(request)
+        await auth_service.verify_token(token, expected_type="access")
+
+        # Convert user to response model
+        user_response = UserResponse.from_orm(user)
+
+        return {
+            "status": "ok",
+            "user": user_response,
+            "message": "Session refreshed successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error refreshing session: {str(e)}"
+        )
 # School Management Endpoints
 @router.post("/schools")
 async def create_school(
