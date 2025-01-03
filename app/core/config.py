@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     FAILED_ATTEMPTS: int = 5 
     DURATION_MINUTES: int = 30  
 
+    LOCKOUT_DURATION_MINUTES: int = 15
+    MAX_LOGIN_ATTEMPTS: int = 5
   
     # Authentication Settings
     SECRET_KEY: str = Field(..., env="SECRET_KEY")

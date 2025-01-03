@@ -1,14 +1,26 @@
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, BackgroundTasks
+from typing import List, Dict, Any, Optional
+from fastapi import (
+    APIRouter, 
+    Depends, 
+    HTTPException, 
+    status, 
+    Response, 
+    Request, 
+    BackgroundTasks
+)
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
-from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
-from app.utils import cookie_utils
-from app.core.errors import RateLimitExceeded, AccountLockedException, InvalidCredentialsException, AuthenticationError, ConfigurationError, get_error_message
+
+from app.core.errors import (
+    RateLimitExceeded,
+    AccountLockedException,
+    InvalidCredentialsException,
+    AuthenticationError,
+    ConfigurationError,
+    get_error_message
+)
 from app.services import AuthService, RegistrationService, EmailService, SchoolService
 from app.schemas import (
     RegisterRequest,
@@ -18,7 +30,8 @@ from app.schemas import (
     LoginResponse,
     TokenResponse,
     SchoolCreateRequest,
-    LoginRequest
+    LoginRequest,
+    TokenData
 )
 from app.core.dependencies import (
     get_db,
@@ -27,32 +40,19 @@ from app.core.dependencies import (
     get_current_active_user
 )
 from app.models import User
-from app.core.config import settings
 from app.core.logging import logger
 
 router = APIRouter(tags=["Authentication"])
 
+# Service dependencies
 def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
     return AuthService(db=db)
+
 def get_registration_service(db: AsyncSession = Depends(get_db)) -> RegistrationService:
     return RegistrationService(db=db)
 
 def get_email_service(db: AsyncSession = Depends(get_db)) -> EmailService:
     return EmailService(db=db)
-
-
-def get_cookie_settings(request: Request) -> Dict[str, Any]:
-    """Get appropriate cookie settings based on environment"""
-    host = request.headers.get("host", "").split(":")[0]
-    is_localhost = host in ["localhost", "127.0.0.1"]
-    
-    return {
-        "httponly": True,
-        "secure": not is_localhost,
-        "samesite": "lax" if is_localhost else "strict",
-        "domain": None if is_localhost else f".{host}",
-    }
-
 
 @router.post("/register/school")
 async def register_school(
@@ -65,7 +65,6 @@ async def register_school(
     try:
         school_service = SchoolService(db)
         result = await school_service.create_school(request, background_tasks)
-        
         return {
             "message": "School and admin account created successfully",
             "school_id": result["school_id"],
@@ -73,10 +72,7 @@ async def register_school(
             "admin_email": result["admin_email"]
         }
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.post("/register", response_model=RegisterResponse)
 async def register(
@@ -86,7 +82,7 @@ async def register(
     registration_service: RegistrationService = Depends(get_registration_service),
     email_service: EmailService = Depends(get_email_service)
 ) -> RegisterResponse:
-    """Register users based on role"""
+    """Register new users based on role"""
     if request.role in ["school", "school_admin"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -108,7 +104,6 @@ async def register(
             
         register_func = registration_methods[request.role]
         
-        # Handle specific registration logic
         if request.role == "parent":
             user = await register_func(request, request.student_id)
             access_link = f"{request.base_url}/parent-portal?token={user.generate_access_token()}"
@@ -135,11 +130,7 @@ async def register(
         return user
         
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
@@ -147,99 +138,172 @@ async def login(
     credentials: LoginRequest,
     response: Response,
     language: str = 'en',
-    db: AsyncSession = Depends(get_db),
     auth_service: AuthService = Depends(get_auth_service)
 ) -> LoginResponse:
+    """Authenticate user and generate tokens"""
     try:
-        # Input validation
-        if not credentials.email or not credentials.email.strip():
+        # Sanitize and validate input
+        email = credentials.email.lower().strip()
+        
+        # Get client IP safely
+        client_ip = request.client.host if request.client else "unknown"
+        
+        # Check rate limit first
+        try:
+            await auth_service.check_rate_limit(email, client_ip)
+        except AccountLockedException as e:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=get_error_message("empty_email", language)
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(e),
+                headers={"Retry-After": str(auth_service.lockout_duration_minutes * 60)}
             )
-
-        if not credentials.password or not credentials.password.strip():
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=get_error_message("empty_password", language)
-            )
-
-        # Use a single transaction for the entire authentication process
-        async with db.begin() as transaction:
-            auth_result = await auth_service.authenticate_user(
-                email=credentials.email.lower().strip(),
+        
+        # Attempt authentication
+        try:
+            login_response = await auth_service.authenticate_user(
+                email=email,
                 password=credentials.password,
                 response=response,
                 request=request,
                 language=language
             )
-            return auth_result
+            return login_response
+            
+        except InvalidCredentialsException as e:
+            # Handle invalid credentials specifically
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=str(e)
+            )
+            
+    except HTTPException:
+        # Re-raise HTTP exceptions without modification
+        raise
+        
+    except Exception as e:
+        # Log the full error for debugging
+        logger.error(
+            "Unexpected login error",
+            exc_info=True,
+            extra={
+                "error_type": type(e).__name__,
+                "ip": client_ip,
+                "email": email if 'email' in locals() else None
+            }
+        )
+        
+        # Return a sanitized error to the client
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=get_error_message("unexpected_error", language)
+        )
+
+@router.post("/refresh-token", response_model=TokenResponse)
+async def refresh_token(
+    request: Request,
+    response: Response,
+    auth_service: AuthService = Depends(get_auth_service),
+    language: str = 'en'
+) -> TokenResponse:
+    """Refresh access token using refresh token"""
+    try:
+        refresh_token = request.cookies.get("refresh_token")
+        if not refresh_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=get_error_message("refresh_token_not_found", language)
+            )
+
+        return await auth_service.refresh_access_token(
+            refresh_token=refresh_token,
+            response=response,
+            request=request,
+            language=language
+        )
 
     except Exception as e:
-        # Handle specific exceptions
-        if isinstance(e, RateLimitExceeded):
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=get_error_message("rate_limit_exceeded", language),
-                headers={"Retry-After": "300"}
-            )
-        elif isinstance(e, AccountLockedException):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=str(e),
-                headers={"Retry-After": str(auth_service.settings.LOCKOUT_DURATION_MINUTES * 60)}
-            )
-        elif isinstance(e, InvalidCredentialsException):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=get_error_message("invalid_credentials", language),
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-        elif isinstance(e, AuthenticationError):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=str(e),
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-        else:
-            logger.error(
-                "Login error",
-                extra={
-                    "error_type": type(e).__name__,
-                    "ip": request.client.host
-                }
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=get_error_message("unexpected_error", language)
-            )
-@router.post("/password-reset")
-async def request_password_reset(
-    email: str,
-    background_tasks: BackgroundTasks,
-    language: str = 'en',
-    auth_service: AuthService = Depends(get_auth_service)
-) -> Dict[str, str]:
-    """Request password reset token"""
-    reset_token = await auth_service.generate_password_reset_token(email)
-    return {"message": "Password reset instructions sent"}
-
-@router.post("/reset-password")
-async def reset_password(
-    reset_token: str,
-    new_password: str,
-    language: str = 'en',
-    auth_service: AuthService = Depends(get_auth_service)
-) -> Dict[str, str]:
-    """Reset password using token"""
-    success = await auth_service.reset_password(reset_token, new_password, language)
-    if not success:
+        logger.error("Token refresh error", extra={"error_type": type(e).__name__})
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password reset failed"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=get_error_message("token_refresh_failed", language)
         )
-    return {"message": "Password reset successful"}
 
+@router.post("/logout")
+async def logout(
+    request: Request,
+    response: Response,
+    auth_service: AuthService = Depends(get_auth_service),
+    language: str = 'en'
+) -> Dict[str, str]:
+    """Logout user and invalidate tokens"""
+    try:
+        token = await auth_service.get_token_from_request(request)
+        return await auth_service.logout(token, response, request, language)
+    except Exception as e:
+        logger.error("Logout error", extra={"error_type": type(e).__name__})
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=get_error_message("logout_failed", language)
+        )
+
+@router.get("/validate-token")
+async def validate_token(
+    request: Request,
+    response: Response,
+    auth_service: AuthService = Depends(get_auth_service),
+    language: str = 'en'
+) -> Dict[str, Any]:
+    """Validate token and handle refresh if needed"""
+    try:
+        # Get access token from request
+        access_token = await auth_service.get_token_from_request(request)
+        if not access_token:
+            raise AuthenticationError("No token provided")
+
+        try:
+            # First try to validate the access token
+            payload = await auth_service.validate_token(access_token, language)
+            return {
+                "valid": True,
+                "payload": payload
+            }
+        except AuthenticationError:
+            # Access token is invalid/expired, try to use refresh token
+            refresh_token = request.cookies.get("refresh_token")
+            if not refresh_token:
+                raise AuthenticationError("No refresh token available")
+
+            # Try to refresh the access token
+            refresh_result = await auth_service.refresh_access_token(
+                refresh_token.replace("Bearer ", ""),
+                response,
+                request,
+                language
+            )
+
+            return {
+                "valid": True,
+                "access_token": refresh_result["access_token"],
+                "token_type": "bearer",
+                "refreshed": True
+            }
+
+    except AuthenticationError as e:
+        logger.warning(f"Token validation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "valid": False,
+                "message": get_error_message("token_validation_failed", language),
+                "redirect": "/login"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Token validation error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=get_error_message("unexpected_error", language)
+        )
 @router.put("/update-profile", response_model=UserResponse)
 async def update_profile(
     user_id: int,
@@ -248,72 +312,19 @@ async def update_profile(
     auth_service: AuthService = Depends(get_auth_service)
 ) -> UserResponse:
     """Update user profile information"""
-    if current_user.id != user_id and current_user.role != "super_admin":
+    try:
+        if current_user.id != user_id and current_user.role != "super_admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to update this profile"
+            )
+        return await auth_service.update_user_profile(user_id, update_request)
+    except Exception as e:
+        logger.error("Profile update error", extra={"error_type": type(e).__name__})
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to update this profile"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
         )
-    return await auth_service.update_user_profile(user_id, update_request)
-
-@router.post("/logout")
-async def logout(
-    response: Response,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    auth_service: AuthService = Depends(get_auth_service)
-) -> Dict[str, str]:
-    """Logout user and invalidate tokens"""
-    token = auth_service.get_token_from_cookie(request)
-    
-    cookie_settings = get_cookie_settings(request)
-    
-    # Clear access token
-    response.delete_cookie(
-        key="access_token",
-        path="/",
-        **cookie_settings
-    )
-    
-    # Clear refresh token
-    refresh_cookie_settings = cookie_settings.copy()
-    refresh_cookie_settings["path"] = "/api/v1/auth/refresh"
-    response.delete_cookie(
-        key="refresh_token",
-        **refresh_cookie_settings
-    )
-    
-    return await auth_service.logout(response, token, current_user.id)
-
-@router.post("/refresh-token", response_model=TokenResponse)
-async def refresh_token(
-    request: Request,
-    response: Response,
-    auth_service: AuthService = Depends(get_auth_service)
-) -> TokenResponse:
-    """Refresh access token using refresh token"""
-    refresh_token = request.cookies.get("refresh_token")
-    if not refresh_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token not found"
-        )
-    
-    token_result = await auth_service.refresh_access_token(refresh_token, response)
-    
-    cookie_settings = get_cookie_settings(request)
-    
-    # Set new access token cookie
-    access_expiration = datetime.utcnow() + timedelta(minutes=auth_service.access_token_expire_minutes)
-    response.set_cookie(
-        key="access_token",
-        value=f"Bearer {token_result['access_token']}",
-        expires=access_expiration,
-        max_age=auth_service.access_token_expire_minutes * 60,
-        path="/",
-        **cookie_settings
-    )
-    
-    return token_result
 
 @router.get("/users", response_model=List[UserResponse])
 async def list_users(
@@ -322,16 +333,22 @@ async def list_users(
     registration_service: RegistrationService = Depends(get_registration_service)
 ) -> List[UserResponse]:
     """List users, optionally filtered by school"""
-    if current_user.role != "super_admin" and (
-        school_id is None or school_id != current_user.school_id
-    ):
+    try:
+        if current_user.role != "super_admin" and (
+            school_id is None or school_id != current_user.school_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to list users from other schools"
+            )
+        return await registration_service.get_school_users(school_id)
+    except Exception as e:
+        logger.error("List users error", extra={"error_type": type(e).__name__})
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to list users from other schools"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
         )
-    return await registration_service.get_school_users(school_id)
 
-# Health check endpoint
 @router.get("/health")
 async def health_check() -> Dict[str, str]:
     """Health check endpoint"""

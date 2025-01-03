@@ -9,14 +9,15 @@ from app.models.user import User
 from app.models.school import School
 from app.services.email_service import EmailService
 from sqlalchemy.future import select
+from app.middleware.request_id import RequestIDMiddleware
 import logging
-
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 
 # Initialize EmailService
 email_service = EmailService()
+
 
 def get_email_service():
     return email_service
@@ -29,6 +30,9 @@ def create_app() -> FastAPI:
         docs_url="/api/docs" if settings.DEBUG else None,
         redoc_url="/api/redoc" if settings.DEBUG else None,
     )
+    
+    app.add_middleware(RequestIDMiddleware)
+
 
     # CORS middleware
     app.add_middleware(

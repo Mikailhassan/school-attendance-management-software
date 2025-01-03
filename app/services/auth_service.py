@@ -4,7 +4,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Response, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, delete, func
 from sqlalchemy.orm import selectinload
-from jose import jwt, JWTError
+from jose import jwt, JWTError  
 from passlib.context import CryptContext
 import uuid
 import re
@@ -36,6 +36,7 @@ class JWTSettings(BaseSettings):
     COOKIE_SECURE: bool = True
     COOKIE_SAMESITE: str = "lax"
     COOKIE_PATH: str = "/"
+    
 
     class Config:
         env_prefix = "JWT_"
@@ -93,8 +94,29 @@ class AuthService:
         self.db = db
         self.settings = JWTSettings()
         self.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-        self._rate_limit_cache: Dict[str, List[datetime]] = {}
-        self._cache_lock = asyncio.Lock()
+        self._rate_limit_cache = {}
+        
+        # Initialize all locks consistently without underscores
+        self.session_lock = asyncio.Lock()
+        self.rate_limit_lock = asyncio.Lock()
+        
+        # Initialize storage
+        self.token_blacklist = set()
+        self.active_sessions = {}
+        self.login_attempts = {}
+        
+        self._lockout_duration_minutes = getattr(JWTSettings, 'LOCKOUT_DURATION_MINUTES', 15)
+        self._max_login_attempts = getattr(JWTSettings, 'MAX_LOGIN_ATTEMPTS', 5)
+        
+    @property
+    def lockout_duration_minutes(self) -> int:
+        return self._lockout_duration_minutes
+
+    @property
+    def max_login_attempts(self) -> int:
+        return self._max_login_attempts
+
+
 
     async def get_current_user(self, token: str):
         """Get current user from token"""
@@ -147,23 +169,38 @@ class AuthService:
                 if not self._rate_limit_cache[ip]:
                     del self._rate_limit_cache[ip]
 
-    async def check_rate_limit(self, request: Request) -> None:
-        """Check if request exceeds rate limit"""
-        ip = request.client.host if request.client else "unknown"
-        current_time = datetime.now(timezone.utc)
-        
-        await self._cleanup_rate_limit_cache()
-        
-        async with self._cache_lock:
-            if ip not in self._rate_limit_cache:
-                self._rate_limit_cache[ip] = []
+    async def check_rate_limit(self, email: str, ip: str) -> None:
+        """Check rate limit and account lockout"""
+        async with self.rate_limit_lock:
+            key = f"{email}:{ip}"
+            attempts = self.login_attempts.get(key, {"count": 0, "timestamp": None})
             
-            self._rate_limit_cache[ip].append(current_time)
-            
-            if len(self._rate_limit_cache[ip]) > self.settings.RATE_LIMIT_MAX_REQUESTS:
-                raise RateLimitExceeded(
-                    "Too many login attempts. Please try again later."
-                )
+            if attempts["count"] >= self.max_login_attempts:
+                if attempts["timestamp"]:
+                    lockout_time = attempts["timestamp"] + timedelta(minutes=self.lockout_duration_minutes)
+                    if datetime.now(timezone.utc) < lockout_time:
+                        time_remaining = (lockout_time - datetime.now(timezone.utc)).seconds // 60
+                        logger.warning(
+                            "Account locked out",
+                            extra={
+                                "email": email,
+                                "ip": ip,
+                                "minutes_remaining": time_remaining
+                            }
+                        )
+                        raise AccountLockedException(
+                            f"Account locked. Try again in {time_remaining} minutes."
+                        )
+                    else:
+                        # Reset attempts if lockout period has passed
+                        self.login_attempts[key] = {"count": 0, "timestamp": None}
+                        logger.info(
+                            "Lockout period expired, attempts reset",
+                            extra={
+                                "email": email,
+                                "ip": ip
+                            }
+                        )
 
     def get_cookie_settings(self, request: Request) -> Dict[str, Any]:
         """Get secure cookie settings based on environment"""
@@ -272,88 +309,155 @@ class AuthService:
             logger.error(f"Error checking account lockout: {str(e)}")
             raise AuthenticationError(get_error_message("error_checking_account", language))
 
-    async def record_failed_attempt(self, email: str, request: Request) -> None:
-        """Record a failed login attempt"""
-        try:
-            failed_attempt = FailedLoginAttempt(
-                email=email,
-                timestamp=datetime.now(timezone.utc),
-                ip_address=request.client.host if request.client else None
+    async def record_failed_attempt(self, email: str, ip: str) -> None:
+        """Record failed login attempt"""
+        async with self.rate_limit_lock:
+            key = f"{email}:{ip}"
+            attempts = self.login_attempts.get(key, {"count": 0, "timestamp": None})
+            attempts["count"] += 1
+            attempts["timestamp"] = datetime.now(timezone.utc)
+            self.login_attempts[key] = attempts
+            
+            logger.warning(
+                "Failed login attempt recorded",
+                extra={
+                    "email": email,
+                    "ip": ip,
+                    "attempt_count": attempts["count"],
+                    "max_attempts": self.max_login_attempts
+                }
             )
-            self.db.add(failed_attempt)
-            await self.db.commit()
-        except Exception as e:
-            await self.db.rollback()
-            logger.error(f"Error recording failed attempt: {str(e)}")
 
-    async def clear_failed_attempts(self, email: str) -> None:
+    async def clear_failed_attempts(self, email: str, ip: str) -> None:
         """Clear failed login attempts after successful login"""
+        async with self.rate_limit_lock:
+            key = f"{email}:{ip}"
+            if key in self.login_attempts:
+                del self.login_attempts[key]
+                logger.info(
+                    "Cleared failed login attempts",
+                    extra={
+                        "email": email,
+                        "ip": ip
+                    }
+                )
+                
+    async def create_token(
+            self,
+            data: Dict[str, Any],
+            token_type: str = "access"
+        ) -> str:
+        """Create a new token with improved error handling"""
         try:
-            await self.db.execute(
-                delete(FailedLoginAttempt).where(FailedLoginAttempt.email == email)
-            )
-            await self.db.commit()
-        except Exception as e:
-            await self.db.rollback()
-            logger.error(f"Error clearing failed attempts: {str(e)}")
-    async def create_token(self, data: Dict[str, Any], token_type: str = "access") -> str:
-        try:
+            # Validate required data
+            if not data.get('sub'):
+                raise ValueError("Missing required 'sub' claim in token data")
+                
             to_encode = data.copy()
+            current_time = datetime.now(timezone.utc)
             
+            # Set expiration based on token type
             if token_type == "access":
-                expire = datetime.now(timezone.utc) + timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+                expire = current_time + timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+                # Create session ID for access tokens
+                try:
+                    session_id = await self._create_session(str(data['sub']), data)
+                    to_encode['session_id'] = session_id
+                except Exception as e:
+                    logger.error("Session creation failed", exc_info=True)
+                    raise AuthenticationError(
+                        message="Failed to create session",
+                        error_code="SESSION_ERROR"
+                    )
             else:
-                expire = datetime.now(timezone.utc) + timedelta(days=self.settings.REFRESH_TOKEN_EXPIRE_DAYS)
+                expire = current_time + timedelta(days=self.settings.REFRESH_TOKEN_EXPIRE_DAYS)
             
+            # Add standard claims
             to_encode.update({
                 "exp": expire,
-                "iat": datetime.now(timezone.utc),
+                "iat": current_time,
                 "type": token_type,
                 "jti": str(uuid.uuid4())
             })
             
-            # Removed sensitive logging, only log non-sensitive metadata
-            logger.debug(
-                "Creating token",
-                extra={
-                    "token_type": token_type,
-                    "expiry": expire.isoformat()
-                }
-            )
-            
-            return jwt.encode(
+            token = jwt.encode(
                 to_encode,
                 self.settings.SECRET_KEY,
                 algorithm=self.settings.ALGORITHM
             )
             
+            logger.debug(
+                "Token created successfully",
+                extra={
+                    "user_id": data.get('sub'),
+                    "token_type": token_type,
+                    "expires": expire.isoformat()
+                }
+            )
+            
+            return f"Bearer {token}"
+            
+        except AuthenticationError:
+            raise
+            
         except Exception as e:
-            logger.error("Token creation error", extra={"error_type": type(e).__name__})
-            raise AuthenticationError("Token creation failed")
+            logger.error(
+                "Token creation failed",
+                exc_info=True,
+                extra={
+                    "error_type": type(e).__name__,
+                    "user_id": data.get('sub'),
+                    "token_type": token_type
+                }
+            )
+            raise AuthenticationError(
+                message="Failed to create token",
+                error_code="TOKEN_CREATION_ERROR"
+            )
+
 
     async def verify_token(self, token: str, expected_type: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Verify and decode a JWT token, including session validation
+        """
         try:
+            # Strip 'Bearer ' prefix if present
             if token.startswith("Bearer "):
                 token = token[7:]
             
+            # Decode the token
             payload = jwt.decode(
                 token,
                 self.settings.SECRET_KEY,
                 algorithms=[self.settings.ALGORITHM]
             )
             
-            # Validate claims
-            self._validate_token_claims(payload, expected_type)
+            # Basic claim validation
+            token_type = payload.get("type")
+            if expected_type and token_type != expected_type:
+                raise jwt.JWTError(f"Invalid token type: expected {expected_type}")
             
-            # Check revocation
-            if await self.check_token_revocation(token):
-                raise JWTError("Token has been revoked")
+            # Session validation for access tokens
+            if token_type == "access":
+                session_id = payload.get("session_id")
+                if not session_id:
+                    logger.warning("Missing session ID in access token", extra={"user_id": payload.get("sub")})
+                    raise jwt.JWTError("Invalid token: missing session")
+                
+                session = await self._validate_session(session_id)
+                if not session:
+                    logger.warning("Invalid or expired session", extra={"session_id": session_id})
+                    raise jwt.JWTError("Invalid token: session expired")
             
-            # Only log non-sensitive data
+            # Check if token has been revoked - using correct attribute name
+            if hasattr(self, 'token_blacklist') and token in self.token_blacklist:
+                raise jwt.JWTError("Token has been revoked")
+            
             logger.debug(
-                "Token verified",
+                "Token verified successfully",
                 extra={
-                    "token_type": payload.get("type"),
+                    "token_type": token_type,
+                    "user_id": payload.get("sub"),
                     "exp": payload.get("exp")
                 }
             )
@@ -361,33 +465,31 @@ class AuthService:
             return payload
             
         except jwt.ExpiredSignatureError:
-            logger.warning("Token expired")
+            logger.warning("Token expired", extra={"token_type": expected_type})
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token has expired"
             )
             
-        except jwt.InvalidSignatureError:
-            logger.warning("Invalid token signature")
+        except jwt.JWTError as e:
+            logger.warning(f"Invalid token: {str(e)}", extra={"token_type": expected_type})
+            if "Signature verification failed" in str(e):
+                logger.error("Token signature verification failed - possible invalid secret key or tampered token")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token"
             )
             
-        except jwt.DecodeError:
-            logger.warning("Token decode error")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token format"
-            )
-            
         except Exception as e:
-            logger.error("Token verification error", extra={"error_type": type(e).__name__})
+            logger.error(
+                "Token verification failed",
+                extra={"error_type": type(e).__name__},
+                exc_info=True
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials"
             )
-
     def _validate_token_claims(self, payload: Dict[str, Any], expected_type: Optional[str]) -> None:
         """Separate method for token claims validation"""
         if not payload.get("sub"):
@@ -462,62 +564,46 @@ class AuthService:
         language: str = 'en'
     ) -> LoginResponse:
         """Authenticate user and generate tokens"""
+        client_ip = request.client.host if request.client else "unknown"
+        
         try:
-            # Get user and verify credentials
-            user = await self.get_user_by_email(email)
+            # Check rate limit and account lockout
+            await self.check_rate_limit(email, client_ip)  
+            await self.check_account_lockout(email, language)
             
+            # Get user from database directly
+            user = await self.get_user_by_email(email)
             if not user:
                 await self.record_failed_attempt(email, request)
-                raise InvalidCredentialsException(
-                    get_error_message("invalid_credentials", language)
-                )
+                raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
 
-            # Extract all needed user data immediately
-            user_data = {
-                'id': str(user.id),
-                'email': user.email,
-                'role': user.role,
-                'school_id': str(user.school_id) if user.school_id else None,
-                'is_active': user.is_active,
-                'password_hash': user.password_hash
-            }
-            
-            # Store user response data before any potential session closure
-            user_response_data = UserResponse.from_orm(user)
-
-            if not user_data['is_active']:
-                raise AuthenticationError(
-                    get_error_message("account_inactive", language)
-                )
-
-            # Check rate limit
-            await self.check_rate_limit(request)
-            
-            # Check for account lockout
-            await self.check_account_lockout(email, language)
-
-            # Verify password
-            if not self.verify_password(password, user_data['password_hash']):
+            # Verify password - remove await since it's synchronous
+            if not self.verify_password(password, user.password_hash):
                 await self.record_failed_attempt(email, request)
-                raise InvalidCredentialsException(
-                    get_error_message("invalid_credentials", language)
-                )
+                raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
+
+            if not user.is_active:
+                raise AuthenticationError(get_error_message("account_inactive", language))
 
             # Clear failed attempts on successful login
-            await self.clear_failed_attempts(email)
+            await self.clear_failed_attempts(email, client_ip)
 
-            # Create token data using the extracted data
-            token_data = TokenData(
-                sub=user_data['id'],
-                email=user_data['email'],
-                role=user_data['role'],
-                school_id=user_data['school_id'],
-                user_id=user_data['id']
-            )
+            # Generate token data
+            token_data = {
+                "sub": str(user.id),
+                "email": user.email,
+                "role": user.role,
+                "school_id": str(user.school_id) if user.school_id else None,
+                "user_id": user.id,
+                "device_info": {
+                    "ip": client_ip,
+                    "user_agent": request.headers.get("user-agent")
+                }
+            }
 
             # Generate tokens
-            access_token = await self.create_token(token_data.model_dump(), "access")
-            refresh_token = await self.create_token(token_data.model_dump(), "refresh")
+            access_token = await self.create_token(token_data, "access")
+            refresh_token = await self.create_token(token_data, "refresh")
 
             # Set auth cookies
             await self.set_auth_cookies(
@@ -527,46 +613,43 @@ class AuthService:
                 refresh_token
             )
 
-            # Log success without sensitive data
+            # Log successful login
             logger.info(
-                "Authentication successful",
+                "Successful login",
                 extra={
-                    "user_id": user_data['id'],
-                    "ip": request.client.host
+                    "user_id": str(user.id),
+                    "email": email,
+                    "ip": client_ip
                 }
             )
 
             return LoginResponse(
-                user=user_response_data,
+                user=UserResponse.from_orm(user).model_dump(),  # Convert UserResponse to dict
                 access_token=access_token,
                 refresh_token=refresh_token
-            )
+                )
 
-        except (RateLimitExceeded, AccountLockedException, 
-                InvalidCredentialsException, AuthenticationError) as e:
+        except (RateLimitExceeded, AccountLockedException, InvalidCredentialsException) as e:
             logger.warning(
-                "Authentication failed",
+                "Login failed",
                 extra={
-                    "error_type": type(e).__name__,
-                    "ip": request.client.host
+                    "error": str(e),
+                    "email": email,
+                    "ip": client_ip
                 }
             )
             raise
         except Exception as e:
             logger.error(
-                "Unexpected authentication error",
+                "Unexpected login error",
+                exc_info=True,
                 extra={
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "ip": request.client.host
-                },
-                exc_info=True
+                    "email": email,
+                    "ip": client_ip
+                }
             )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=get_error_message("authentication_failed", language)
-            )
-            
+            raise AuthenticationError(get_error_message("unexpected_error", language))
+        
     async def cleanup_expired_data(self) -> None:
         """Cleanup expired tokens and failed login attempts"""
         async with self.db.begin() as transaction:
@@ -606,6 +689,10 @@ class AuthService:
     ) -> Dict[str, str]:
         """Refresh access token using refresh token"""
         try:
+            # Check if refresh token is revoked
+            if await self.check_token_revocation(refresh_token):
+                raise AuthenticationError("Refresh token has been revoked")
+
             # Verify refresh token
             payload = await self.verify_token(refresh_token)
             
@@ -613,6 +700,11 @@ class AuthService:
                 raise AuthenticationError(
                     get_error_message("invalid_refresh_token", language)
                 )
+            
+            # Verify token expiration
+            exp = payload.get("exp")
+            if not exp or datetime.utcnow() > datetime.fromtimestamp(exp):
+                raise AuthenticationError("Refresh token has expired")
             
             # Create new token data
             token_data = TokenData(
@@ -637,23 +729,35 @@ class AuthService:
                 **cookie_settings
             )
             
+            # Log successful token refresh
+            logger.info("Access token refreshed successfully",
+                       extra={"user_id": payload.get("sub")})
+            
             return {
                 "access_token": new_access_token,
                 "token_type": "bearer"
             }
             
         except (JWTError, AuthenticationError) as e:
-            logger.warning(f"Token refresh failed: {str(e)}")
+            logger.warning(f"Token refresh failed: {str(e)}",
+                         extra={"error": str(e)})
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=get_error_message("token_refresh_failed", language),
+                detail={
+                    "message": get_error_message("token_refresh_failed", language),
+                    "error_code": "TOKEN_REFRESH_FAILED"
+                },
                 headers={"WWW-Authenticate": "Bearer"}
             )
         except Exception as e:
-            logger.error(f"Unexpected error during token refresh: {str(e)}")
+            logger.error(f"Unexpected error during token refresh: {str(e)}",
+                        extra={"error_type": type(e).__name__})
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=get_error_message("token_refresh_failed", language)
+                detail={
+                    "message": get_error_message("token_refresh_failed", language),
+                    "error_code": "INTERNAL_SERVER_ERROR"
+                }
             )
 
     async def logout(
@@ -683,67 +787,143 @@ class AuthService:
 
     async def validate_token(
         self,
-        token: str,
+        token: str | None,
         language: str = 'en'
     ) -> Dict[str, Any]:
         """Validate token and return payload"""
+        if not token:
+            raise AuthenticationError("No token provided")
+            
         try:
+            # Verify the token
             payload = await self.verify_token(token)
+            
+            # Verify token type is access token
+            if payload.get("type") != "access":
+                raise AuthenticationError("Invalid token type")
+                
             return payload
+            
         except (JWTError, AuthenticationError) as e:
             logger.warning(f"Token validation failed: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=get_error_message("invalid_token", language),
-                headers={"WWW-Authenticate": "Bearer"}
-            )
+            raise AuthenticationError(str(e))
         except Exception as e:
             logger.error(f"Unexpected error during token validation: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=get_error_message("token_validation_failed", language)
+            raise AuthenticationError("Token validation failed")
+        
+    async def _create_session(self, user_id: str, token_data: Dict[str, Any]) -> str:
+        """Create a new session with proper error handling"""
+        try:
+            async with self.session_lock:  
+                session_id = str(uuid.uuid4())
+                current_time = datetime.now(timezone.utc)
+                
+                self.active_sessions[session_id] = {  
+                    "user_id": user_id,
+                    "created_at": current_time,
+                    "last_activity": current_time,
+                    "token_data": token_data,
+                    "device_info": token_data.get("device_info", {}),
+                    "ip_address": token_data.get("ip_address")
+                }
+                
+                logger.debug(
+                    "Session created",
+                    extra={
+                        "session_id": session_id,
+                        "user_id": user_id
+                    }
+                )
+                
+                return session_id
+                
+        except Exception as e:
+            logger.error(
+                "Session creation failed",
+                exc_info=True,
+                extra={
+                    "error_type": type(e).__name__,
+                    "user_id": user_id
+                }
+            )
+            raise AuthenticationError(
+                message="Failed to create session",
+                error_code="SESSION_CREATION_ERROR"
             )
 
-    # Background task setup for periodic cleanup
-    # Background task setup for periodic cleanup
-async def setup_cleanup_task(auth_service: AuthService) -> None:
-    """Setup periodic cleanup task"""
-    while True:
-        try:
-            await auth_service.cleanup_expired_data()
-            # Run cleanup every hour
-            await asyncio.sleep(3600)
-        except Exception as e:
-            logger.error(f"Error in cleanup task: {str(e)}")
-            await asyncio.sleep(60)  # Wait a minute before retrying
+    async def _validate_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Validate session and update last activity"""
+        async with self.session_lock:  # Changed from self._session_lock
+            session = self.active_sessions.get(session_id)  # Changed from self._active_sessions
+            if not session:
+                return None
+                
+            # Check session expiry
+            session_age = datetime.now(timezone.utc) - session["created_at"]
+            if session_age > timedelta(minutes=self.settings.SESSION_EXPIRE_MINUTES):
+                await self._end_session(session_id)
+                return None
+            
+            # Update last activity
+            session["last_activity"] = datetime.now(timezone.utc)
+            return session
 
-# Dependency for FastAPI
+    async def _end_session(self, session_id: str) -> None:
+        """End a session and cleanup"""
+        async with self.session_lock:  # Changed from self._session_lock
+            if session_id in self.active_sessions:  # Changed from self._active_sessions
+                session = self.active_sessions[session_id]
+                logger.info(
+                    "Session ended",
+                    extra={
+                        "session_id": session_id,
+                        "user_id": session["user_id"],
+                        "duration": (datetime.now(timezone.utc) - session["created_at"]).total_seconds()
+                    }
+                )
+                del self.active_sessions[session_id]
+    
+            
+               
+    async def get_token_from_request(self, request: Request) -> str | None:
+            """Extract token from request headers or cookies"""
+            # Try to get token from Authorization header
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                return auth_header[7:]  # Remove 'Bearer ' prefix
+            
+            # Try to get token from cookie
+            access_token = request.cookies.get("access_token")
+            if access_token and access_token.startswith("Bearer "):
+                return access_token[7:]
+                
+            return access_token  # Return None or token without Bearer prefix
+
+
+        # Dependency for FastAPI
 async def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
     """Dependency to get AuthService instance"""
     return AuthService(db)
 
-# Startup event handler for FastAPI
+
+    # Startup event handler for FastAPI
 async def start_cleanup_task(app: FastAPI) -> None:
     """Start the cleanup task when the application starts"""
     auth_service = await get_auth_service()
     asyncio.create_task(setup_cleanup_task(auth_service))
-    
-    
-async def get_token_from_request(request: Request) -> str:
-    # Try Authorization header first
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        return auth_header
-        
-    # Try cookie next
-    access_token = request.cookies.get("access_token")
-    if access_token and access_token.startswith("Bearer "):
-        return access_token
-        
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Not authenticated",
-        headers={"WWW-Authenticate": "Bearer"}
-    )    
-           
             
+# Background task setup for periodic cleanup
+async def setup_cleanup_task(auth_service: AuthService) -> None:
+        """Setup periodic cleanup task"""
+        while True:
+            try:
+                await auth_service.cleanup_expired_data()
+                # Run cleanup every hour
+                await asyncio.sleep(3600)
+            except Exception as e:
+                logger.error(f"Error in cleanup task: {str(e)}")
+                await asyncio.sleep(60)  # Wait a minute before retrying            
+    
+    
+        
+  

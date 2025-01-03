@@ -15,11 +15,10 @@ class RegisterRequest(BaseModel):
 
 # Login Request Model - For logging in a user
 class LoginRequest(BaseModel):
-    email: EmailStr  # Email address
-    password: str  # User's password
+    email: str
+    password: str
 
-    class Config:
-        from_attributes = True
+
 
 # Password Reset Request Model - For resetting a user's password
 class PasswordResetRequest(BaseModel):

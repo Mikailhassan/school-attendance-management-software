@@ -21,10 +21,9 @@ class UserBaseResponse(BaseModel):
 
 # Response for a successful user login (includes a token for authentication)
 class LoginResponse(BaseModel):
-    """Response model for successful login"""
-    user: UserResponse
     access_token: str
     refresh_token: str
+    user: dict
     
     class Config:
         from_attributes = True

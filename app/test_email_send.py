@@ -1,9 +1,9 @@
 import asyncio
 import logging
 import socket
+import ssl
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 
-# Set up logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -12,48 +12,57 @@ logger = logging.getLogger(__name__)
 
 # Email Configuration
 conf = ConnectionConfig(
-    MAIL_USERNAME="api",  # Mailtrap username
-    MAIL_PASSWORD="dc46307ac3da97bf55533333db23c4a5",  # Mailtrap password
-    MAIL_FROM="smtp@mailtrap.io",  # Sender email
-    MAIL_PORT=587,  # Mailtrap port
-    MAIL_SERVER="live.smtp.mailtrap.io",  # Mailtrap server
-    MAIL_STARTTLS=True,  # Enable STARTTLS
-    MAIL_SSL_TLS=False,  # SSL/TLS not used
+    MAIL_USERNAME="api",
+    MAIL_PASSWORD="dc46307ac3da97bf55533333db23c4a5",
+    MAIL_FROM="smtp@mailtrap.io",
+    MAIL_PORT=587,
+    MAIL_SERVER="live.smtp.mailtrap.io",
+    MAIL_STARTTLS=True,
+    MAIL_SSL_TLS=False,
     USE_CREDENTIALS=True,
-    VALIDATE_CERTS=True
+    VALIDATE_CERTS=True,
+    TIMEOUT=5  # Increased timeout
 )
 
 async def test_network():
-    """Test network connectivity to SMTP server"""
+    """Test network connectivity to SMTP server with multiple approaches"""
     try:
         # Test DNS resolution
         logger.info("Testing DNS resolution...")
         smtp_ip = socket.gethostbyname('live.smtp.mailtrap.io')
         logger.info(f"SMTP server IP: {smtp_ip}")
         
-        # Test socket connection
-        logger.info("Testing socket connection...")
-        sock = socket.create_connection(('live.smtp.mailtrap.io', 587), timeout=10)
-        sock.close()
-        logger.info("Socket connection successful")
+        # Test basic ping
+        logger.info("Testing ping to 8.8.8.8...")
+        ping_result = os.system("ping -c 1 8.8.8.8")
+        logger.info(f"Ping result: {'Success' if ping_result == 0 else 'Failed'}")
+        
+        # Test HTTPS connection (port 443)
+        logger.info("Testing HTTPS connection...")
+        https_context = ssl.create_default_context()
+        with socket.create_connection(("google.com", 443)) as sock:
+            with https_context.wrap_socket(sock, server_hostname="google.com") as ssock:
+                logger.info("HTTPS connection successful")
+        
+        # Test SMTP connection
+        logger.info("Testing SMTP connection...")
+        smtp_context = ssl.create_default_context()
+        with socket.create_connection((smtp_ip, 587), timeout=10) as sock:
+            logger.info("Basic socket connection successful")
+            with smtp_context.wrap_socket(sock, server_hostname='live.smtp.mailtrap.io') as ssock:
+                logger.info("SSL/TLS connection successful")
+        
         return True
     except socket.gaierror as e:
         logger.error(f"DNS resolution failed: {e}")
-        return False
     except socket.timeout as e:
         logger.error(f"Connection timed out: {e}")
-        return False
     except Exception as e:
-        logger.error(f"Network test failed: {e}")
-        return False
+        logger.error(f"Network test failed: {type(e).__name__}: {str(e)}")
+    return False
 
 async def test_email():
     """Test email sending functionality"""
-    # First test network connectivity
-    if not await test_network():
-        logger.error("Network connectivity test failed. Skipping email test.")
-        return
-    
     logger.info("Starting email test...")
     
     try:
@@ -65,7 +74,7 @@ async def test_email():
         logger.info("Creating test message...")
         message = MessageSchema(
             subject="Test Email from FastAPI with Mailtrap",
-            recipients=["mikailismail260@gmail.com"],  # Replace with the recipient email
+            recipients=["mikailismail260@gmail.com"],
             body="""
             <html>
                 <body>
@@ -83,22 +92,18 @@ async def test_email():
         await mail.send_message(message)
         logger.info("Email sent successfully!")
         
-    except ConnectionError as e:
-        logger.error(f"Connection error occurred: {e}")
-        logger.error("Please check your network connection and firewall settings.")
-    except TimeoutError as e:
-        logger.error(f"Connection timed out: {e}")
-        logger.error("The SMTP server took too long to respond.")
     except Exception as e:
         logger.error(f"Failed to send email. Error type: {type(e).__name__}")
         logger.error(f"Error details: {str(e)}")
-        # Print exception traceback for detailed debugging
         import traceback
         logger.error(f"Traceback:\n{traceback.format_exc()}")
 
 if __name__ == "__main__":
     logger.info("Starting SMTP test script...")
     try:
+        # First test network connectivity
+        asyncio.run(test_network())
+        # If network test passes, try email
         asyncio.run(test_email())
     except KeyboardInterrupt:
         logger.info("Test cancelled by user.")
