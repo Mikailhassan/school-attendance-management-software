@@ -96,7 +96,6 @@ class AuthService:
         self.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
         self._rate_limit_cache = {}
         
-        # Initialize all locks consistently without underscores
         self.session_lock = asyncio.Lock()
         self.rate_limit_lock = asyncio.Lock()
         
@@ -223,20 +222,35 @@ class AuthService:
         refresh_token: str
     ) -> None:
         """Set secure authentication cookies"""
-        cookie_settings = self.get_cookie_settings(request)
+        # Get base settings
+        base_settings = self.get_cookie_settings(request)
         
+        # Access token settings - available at root path
+        access_settings = {
+            **base_settings,
+            "path": "/",  # Root path for access token
+        }
+        
+        # Refresh token settings - only available at refresh endpoint
+        refresh_settings = {
+            **base_settings,
+            "path": "/api/v1/auth/refresh-token",  # Restrict to refresh endpoint
+        }
+        
+        # Set access token
         response.set_cookie(
             key="access_token",
             value=f"Bearer {access_token}",
             max_age=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            **cookie_settings
+            **access_settings
         )
         
+        # Set refresh token with restricted path
         response.set_cookie(
             key="refresh_token",
             value=f"Bearer {refresh_token}",
             max_age=self.settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-            **cookie_settings
+            **refresh_settings
         )
 
     async def clear_auth_cookies(self, response: Response, request: Request) -> None:
@@ -566,89 +580,78 @@ class AuthService:
         """Authenticate user and generate tokens"""
         client_ip = request.client.host if request.client else "unknown"
         
-        try:
-            # Check rate limit and account lockout
-            await self.check_rate_limit(email, client_ip)  
-            await self.check_account_lockout(email, language)
-            
-            # Get user from database directly
-            user = await self.get_user_by_email(email)
-            if not user:
-                await self.record_failed_attempt(email, request)
-                raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
+        # Check rate limit and account lockout
+        await self.check_rate_limit(email, client_ip)  
+        await self.check_account_lockout(email, language)
+        
+        # Get user from database directly
+        user = await self.get_user_by_email(email)
+        if not user:
+            await self.record_failed_attempt(email, request)
+            raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
 
-            # Verify password - remove await since it's synchronous
-            if not self.verify_password(password, user.password_hash):
-                await self.record_failed_attempt(email, request)
-                raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
+        # Verify password - synchronous operation
+        if not self.verify_password(password, user.password_hash):
+            await self.record_failed_attempt(email, request)
+            raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
 
-            if not user.is_active:
-                raise AuthenticationError(get_error_message("account_inactive", language))
+        if not user.is_active:
+            raise AuthenticationError(get_error_message("account_inactive", language))
 
-            # Clear failed attempts on successful login
-            await self.clear_failed_attempts(email, client_ip)
+        # Clear failed attempts on successful login
+        await self.clear_failed_attempts(email, client_ip)
 
-            # Generate token data
-            token_data = {
-                "sub": str(user.id),
-                "email": user.email,
-                "role": user.role,
-                "school_id": str(user.school_id) if user.school_id else None,
-                "user_id": user.id,
-                "device_info": {
-                    "ip": client_ip,
-                    "user_agent": request.headers.get("user-agent")
-                }
+        # Generate token data
+        token_data = {
+            "sub": str(user.id),
+            "email": user.email,
+            "role": user.role,
+            "school_id": str(user.school_id) if user.school_id else None,
+            "user_id": user.id,
+            "device_info": {
+                "ip": client_ip,
+                "user_agent": request.headers.get("user-agent")
             }
+        }
 
-            # Generate tokens
-            access_token = await self.create_token(token_data, "access")
-            refresh_token = await self.create_token(token_data, "refresh")
+        # Generate tokens
+        access_token = await self.create_token(token_data, "access")
+        refresh_token = await self.create_token(token_data, "refresh")
 
-            # Set auth cookies
-            await self.set_auth_cookies(
-                response,
-                request,
-                access_token,
-                refresh_token
-            )
+        # Set secure cookies
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=True,
+            secure=True,  # Always use secure in production
+            samesite="lax",
+            path="/",
+            max_age=7 * 24 * 3600  # 7 days
+        )
+        
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+            max_age=3600  # 1 hour
+        )
+        
+        # Set security headers
+        response.headers.update({
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "X-XSS-Protection": "1; mode=block",
+            "Strict-Transport-Security": "max-age=31536000; includeSubDomains"
+        })
 
-            # Log successful login
-            logger.info(
-                "Successful login",
-                extra={
-                    "user_id": str(user.id),
-                    "email": email,
-                    "ip": client_ip
-                }
-            )
-
-            return LoginResponse(
-                user=UserResponse.from_orm(user).model_dump(),  # Convert UserResponse to dict
-                access_token=access_token,
-                refresh_token=refresh_token
-                )
-
-        except (RateLimitExceeded, AccountLockedException, InvalidCredentialsException) as e:
-            logger.warning(
-                "Login failed",
-                extra={
-                    "error": str(e),
-                    "email": email,
-                    "ip": client_ip
-                }
-            )
-            raise
-        except Exception as e:
-            logger.error(
-                "Unexpected login error",
-                exc_info=True,
-                extra={
-                    "email": email,
-                    "ip": client_ip
-                }
-            )
-            raise AuthenticationError(get_error_message("unexpected_error", language))
+        return LoginResponse(
+            user=UserResponse.from_orm(user).model_dump(),
+            access_token=access_token,
+            refresh_token=refresh_token
+        )
         
     async def cleanup_expired_data(self) -> None:
         """Cleanup expired tokens and failed login attempts"""

@@ -8,33 +8,24 @@ logger = logging.getLogger(__name__)
 
 class CookieConfig:
     """Cookie configuration constants"""
-    ALLOWED_DOMAINS = ["localhost", "127.0.0.1"]  # Add your production domains here
+    ALLOWED_DOMAINS = ["localhost", "127.0.0.1"]
     ACCESS_TOKEN_KEY = "access_token"
     REFRESH_TOKEN_KEY = "refresh_token"
     TOKEN_PREFIX = "Bearer"
-    DEFAULT_REFRESH_PATH = "/api/v1/auth/refresh-token"  # Updated path
+    DEFAULT_REFRESH_PATH = "/api/v1/auth/refresh-token"
     ROOT_PATH = "/"
 
 def get_cookie_settings(request: Request, is_refresh_token: bool = False) -> Dict[str, Any]:
-    """
-    Get appropriate cookie settings based on environment and token type.
-    
-    Args:
-        request: FastAPI request object
-        is_refresh_token: Boolean indicating if settings are for refresh token
-        
-    Returns:
-        Dict containing cookie settings
-    """
     try:
         host = request.headers.get("host", "").split(":")[0]
+        origin = request.headers.get("origin", "")
         is_localhost = host in CookieConfig.ALLOWED_DOMAINS
         
         settings = {
             "httponly": True,
-            "secure": not is_localhost and request.url.scheme == "https",
-            "samesite": "lax" if is_localhost else "strict",
-            "domain": None if is_localhost else f".{host}",
+            "secure": not is_localhost,  # False for localhost
+            "samesite": "lax",  # Use 'lax' for both localhost and production
+            "domain": None,  # Let the browser handle the domain
             "path": CookieConfig.DEFAULT_REFRESH_PATH if is_refresh_token else CookieConfig.ROOT_PATH
         }
         
@@ -42,11 +33,10 @@ def get_cookie_settings(request: Request, is_refresh_token: bool = False) -> Dic
         return settings
     except Exception as e:
         logger.error(f"Error getting cookie settings: {str(e)}")
-        # Return secure defaults
         return {
             "httponly": True,
-            "secure": True,
-            "samesite": "strict",
+            "secure": False,  # False for development
+            "samesite": "lax",
             "path": CookieConfig.DEFAULT_REFRESH_PATH if is_refresh_token else CookieConfig.ROOT_PATH
         }
 

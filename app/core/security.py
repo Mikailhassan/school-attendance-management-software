@@ -242,3 +242,41 @@ def create_refresh_token(user_id: Union[int, str]) -> str:
     """Create refresh token with user ID"""
     data = {"sub": str(user_id)}
     return TokenHandler.create_token(data, TokenType.REFRESH)
+def generate_secure_token(length: int = 32) -> str:
+    """Generate a secure random token"""
+    return secrets.token_urlsafe(length)
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize a filename to prevent directory traversal attacks"""
+    return re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+
+def is_secure_password(password: str) -> tuple[bool, Optional[str]]:
+    """
+    Check if a password meets security requirements.
+    Returns (is_secure, error_message)
+    """
+    if len(password) < SecurityConfig.MIN_PASSWORD_LENGTH:
+        return False, f"Password must be at least {SecurityConfig.MIN_PASSWORD_LENGTH} characters long"
+    
+    if len(password) > SecurityConfig.MAX_PASSWORD_LENGTH:
+        return False, f"Password must not exceed {SecurityConfig.MAX_PASSWORD_LENGTH} characters"
+        
+    if not any(c.islower() for c in password):
+        return False, "Password must contain at least one lowercase letter"
+        
+    if not any(c.isupper() for c in password):
+        return False, "Password must contain at least one uppercase letter"
+        
+    if not any(c.isdigit() for c in password):
+        return False, "Password must contain at least one number"
+        
+    if not any(c in "@$!%*?&" for c in password):
+        return False, "Password must contain at least one special character (@$!%*?&)"
+        
+    return True, None
+
+def compare_passwords_securely(password1: str, password2: str) -> bool:
+    """
+    Compare two passwords in a timing-safe manner to prevent timing attacks
+    """
+    return secrets.compare_digest(password1.encode(), password2.encode())

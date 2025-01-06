@@ -41,6 +41,7 @@ from app.core.dependencies import (
 )
 from app.models import User
 from app.core.logging import logger
+import uuid
 
 router = APIRouter(tags=["Authentication"])
 
@@ -140,64 +141,102 @@ async def login(
     language: str = 'en',
     auth_service: AuthService = Depends(get_auth_service)
 ) -> LoginResponse:
-    """Authenticate user and generate tokens"""
+    """
+    Authenticate user and generate access & refresh tokens
+    """
     try:
-        # Sanitize and validate input
+        # Store language preference
+        request.state.language = language
+        
+        # Basic input sanitization
         email = credentials.email.lower().strip()
+        password = credentials.password.strip()
         
-        # Get client IP safely
+        # Get client info for logging/tracking
         client_ip = request.client.host if request.client else "unknown"
+        user_agent = request.headers.get("user-agent", "unknown")
+        request_id = str(uuid.uuid4())  # Fixed: Use uuid.uuid4() to generate UUID
         
-        # Check rate limit first
-        try:
-            await auth_service.check_rate_limit(email, client_ip)
-        except AccountLockedException as e:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=str(e),
-                headers={"Retry-After": str(auth_service.lockout_duration_minutes * 60)}
-            )
-        
-        # Attempt authentication
-        try:
-            login_response = await auth_service.authenticate_user(
-                email=email,
-                password=credentials.password,
-                response=response,
-                request=request,
-                language=language
-            )
-            return login_response
-            
-        except InvalidCredentialsException as e:
-            # Handle invalid credentials specifically
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=str(e)
-            )
-            
-    except HTTPException:
-        # Re-raise HTTP exceptions without modification
-        raise
-        
-    except Exception as e:
-        # Log the full error for debugging
-        logger.error(
-            "Unexpected login error",
-            exc_info=True,
+        # Enhanced logging for security tracking
+        logger.info(
+            "Login attempt initiated",
             extra={
-                "error_type": type(e).__name__,
+                "request_id": request_id,
                 "ip": client_ip,
-                "email": email if 'email' in locals() else None
+                "user_agent": user_agent,
+                "email_domain": email.split('@')[1] if '@' in email else None
             }
         )
         
-        # Return a sanitized error to the client
+        # Authenticate user and get login response
+        login_response = await auth_service.authenticate_user(
+            email=email,
+            password=password,
+            response=response,
+            request=request,
+            language=language
+        )
+        
+        logger.info(
+            "Login successful",
+            extra={
+                "request_id": request_id,
+                "user_id": str(login_response.user.get("id")),
+                "ip": client_ip
+            }
+        )
+        
+        return login_response
+            
+    except (RateLimitExceeded, AccountLockedException) as e:
+        logger.warning(
+            "Login blocked due to rate limit or account lock",
+            extra={
+                "request_id": request_id,
+                "ip": client_ip,
+                "email": email,
+                "reason": str(e)
+            }
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+            headers={
+                "Retry-After": str(auth_service.lockout_duration_minutes * 60),
+                "X-Error-Code": "ACCOUNT_LOCKED"
+            }
+        )
+    
+    except InvalidCredentialsException as e:
+        logger.warning(
+            "Invalid credentials provided",
+            extra={
+                "request_id": request_id,
+                "ip": client_ip,
+                "email": email
+            }
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+            headers={"X-Error-Code": "INVALID_CREDENTIALS"}
+        )
+        
+    except Exception as e:
+        logger.error(
+            "Unexpected error during login",
+            exc_info=True,
+            extra={
+                "request_id": request_id if 'request_id' in locals() else None,
+                "error_type": type(e).__name__,
+                "ip": client_ip if 'client_ip' in locals() else None
+            }
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=get_error_message("unexpected_error", language)
+            detail=get_error_message("unexpected_error", language),
+            headers={"X-Error-Code": "SERVER_ERROR"}
         )
-
 @router.post("/refresh-token", response_model=TokenResponse)
 async def refresh_token(
     request: Request,
@@ -207,27 +246,52 @@ async def refresh_token(
 ) -> TokenResponse:
     """Refresh access token using refresh token"""
     try:
+        # Check both cookies and Authorization header
         refresh_token = request.cookies.get("refresh_token")
+        
+        # If not in cookies, check Authorization header
         if not refresh_token:
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                refresh_token = auth_header.split(" ")[1]
+        
+        if not refresh_token:
+            logger.warning("No refresh token found in cookies or headers")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=get_error_message("refresh_token_not_found", language)
+                detail=get_error_message("refresh_token_not_found", language),
+                headers={"X-Error-Code": "TOKEN_NOT_FOUND"}
             )
 
-        return await auth_service.refresh_access_token(
+        token_response = await auth_service.refresh_access_token(
             refresh_token=refresh_token,
             response=response,
             request=request,
             language=language
         )
+        
+        # Set new cookies with the refreshed tokens
+        response.set_cookie(
+            key="access_token",
+            value=token_response.access_token,
+            httponly=True,
+            secure=False,  # True in production
+            samesite="lax",
+            domain="localhost",
+            path="/",
+            max_age=3600
+        )
+        
+        logger.debug("Token refresh successful")
+        return token_response
 
     except Exception as e:
-        logger.error("Token refresh error", extra={"error_type": type(e).__name__})
+        logger.error("Token refresh error", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=get_error_message("token_refresh_failed", language)
+            detail=get_error_message("token_refresh_failed", language),
+            headers={"X-Error-Code": "REFRESH_FAILED"}
         )
-
 @router.post("/logout")
 async def logout(
     request: Request,

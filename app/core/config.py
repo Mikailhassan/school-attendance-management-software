@@ -1,4 +1,3 @@
-# app/core/config.py
 import os
 import base64
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,25 +16,42 @@ class Settings(BaseSettings):
 
     PRODUCTION: bool = Field(default=False, env="PRODUCTION")
 
-    RATE_LIMIT_MAX_REQUESTS: int = 100
-    RATE_LIMIT_TIME_WINDOW: int = 60  
+    # Rate Limiting Settings
+    RATE_LIMIT_MAX_REQUESTS: int = Field(default=100, env="RATE_LIMIT_MAX_REQUESTS")
+    RATE_LIMIT_TIME_WINDOW: int = Field(default=60, env="RATE_LIMIT_WINDOW_SECONDS")
 
-    # Authentication Settings
-    FAILED_ATTEMPTS: int = 5 
-    DURATION_MINUTES: int = 30  
+    # Security Settings
+    FAILED_ATTEMPTS: int = Field(default=5, env="FAILED_LOGIN_ATTEMPTS")
+    DURATION_MINUTES: int = Field(default=30, env="SESSION_EXPIRE_MINUTES")
+    LOCKOUT_DURATION_MINUTES: int = Field(default=15, env="LOCKOUT_DURATION_MINUTES")
+    MAX_LOGIN_ATTEMPTS: int = Field(default=5, env="FAILED_LOGIN_ATTEMPTS")
+    
+    # Cookie Settings
+    COOKIE_DOMAIN: str = Field(default="localhost", env="COOKIE_DOMAIN")
+    COOKIE_SECURE: bool = Field(default=True, env="COOKIE_SECURE")
+    COOKIE_HTTPONLY: bool = Field(default=True, env="COOKIE_HTTPONLY")
+    COOKIE_SAMESITE: str = Field(default="lax", env="COOKIE_SAMESITE")
+    COOKIE_PATH: str = Field(default="/", env="COOKIE_PATH")
 
-    LOCKOUT_DURATION_MINUTES: int = 15
-    MAX_LOGIN_ATTEMPTS: int = 5
-  
     # Authentication Settings
     SECRET_KEY: str = Field(..., env="SECRET_KEY")
-    ALGORITHM: str = "HS256"
+    ALGORITHM: str = Field(default="HS256", env="ALGORITHM")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, env="REFRESH_TOKEN_EXPIRE_DAYS")
+    TOKEN_ISSUER: str = Field(default="school_attendance_system", env="TOKEN_ISSUER")
     
     # CORS Settings
-    ALLOWED_ORIGINS: List[str] = Field(default=["http://localhost:3000"], env="ALLOWED_ORIGINS")
-    
+    ALLOWED_ORIGINS: List[str] = Field(
+        default=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000"
+        ],
+        env="ALLOWED_ORIGINS"
+    )
+    credentials: bool = Field(default=True, env="CREDENTIALS")
+ 
     # File Upload Settings
     UPLOAD_FOLDER: str = Field(default="uploads", env="UPLOAD_FOLDER")
     MAX_CONTENT_LENGTH: int = Field(default=16 * 1024 * 1024, env="MAX_CONTENT_LENGTH")
@@ -47,6 +63,7 @@ class Settings(BaseSettings):
     EMAIL_USERNAME: Optional[str] = Field(default=None, env="EMAIL_USERNAME")
     EMAIL_PASSWORD: Optional[str] = Field(default=None, env="EMAIL_PASSWORD")
     EMAIL_FROM: Optional[str] = Field(default=None, env="EMAIL_FROM")
+    MAIL_USE_TLS: bool = Field(default=False, env="MAIL_USE_TLS")
     
     # Fingerprint Scanner Settings
     SCANNER_TIMEOUT: int = Field(default=10, env="SCANNER_TIMEOUT")
@@ -87,15 +104,27 @@ class Settings(BaseSettings):
 
     @validator('SECRET_KEY')
     def validate_secret_key(cls, v: str) -> str:
+        """Ensure secret key is properly formatted and encoded"""
+        # Convert to bytes if it's a string
+        if isinstance(v, str):
+            v = v.encode()
+        
+        # Ensure minimum length
         if len(v) < 32:
             from hashlib import sha256
-            v = sha256(v.encode()).hexdigest()
-        return base64.b64encode(v.encode()).decode()
+            v = sha256(v).digest()
+        
+        # Return base64 encoded string
+        return base64.urlsafe_b64encode(v).decode()
 
     @validator('ALLOWED_ORIGINS', pre=True)
     def parse_allowed_origins(cls, v):
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
+            try:
+                import json
+                return json.loads(v)
+            except json.JSONDecodeError:
+                return [origin.strip() for origin in v.split(",")]
         return v
 
     @validator('ALLOWED_EXTENSIONS', pre=True)
@@ -132,7 +161,10 @@ class Settings(BaseSettings):
             raise ValueError(f"Invalid URL format: {v}. Please provide a valid URL.")
 
     def get_jwt_key(self) -> str:
-        return self.SECRET_KEY
+        """Return the properly encoded secret key for JWT operations"""
+        if isinstance(self.SECRET_KEY, str):
+            return self.SECRET_KEY
+        return base64.urlsafe_b64encode(self.SECRET_KEY).decode()
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -158,7 +190,8 @@ def get_jwt_settings() -> dict:
         "secret_key": settings.get_jwt_key(),
         "algorithm": settings.ALGORITHM,
         "access_token_expire_minutes": settings.ACCESS_TOKEN_EXPIRE_MINUTES,
-        "refresh_token_expire_days": settings.REFRESH_TOKEN_EXPIRE_DAYS
+        "refresh_token_expire_days": settings.REFRESH_TOKEN_EXPIRE_DAYS,
+        "token_issuer": settings.TOKEN_ISSUER
     }
 
 def get_fingerprint_settings() -> dict:
@@ -184,7 +217,8 @@ def get_email_settings() -> dict:
         "smtp_port": settings.SMTP_PORT,
         "username": settings.EMAIL_USERNAME,
         "password": settings.EMAIL_PASSWORD,
-        "from_email": settings.EMAIL_FROM
+        "from_email": settings.EMAIL_FROM,
+        "use_tls": settings.MAIL_USE_TLS
     }
 
 def get_sms_settings() -> dict:

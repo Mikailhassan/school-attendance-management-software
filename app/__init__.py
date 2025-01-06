@@ -10,6 +10,7 @@ from app.models.school import School
 from app.services.email_service import EmailService
 from sqlalchemy.future import select
 from app.middleware.request_id import RequestIDMiddleware
+from app.middleware.auth import AuthMiddleware
 import logging
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -31,16 +32,33 @@ def create_app() -> FastAPI:
         redoc_url="/api/redoc" if settings.DEBUG else None,
     )
     
-    app.add_middleware(RequestIDMiddleware)
-
-
-    # CORS middleware
+ # CORS middleware must come FIRST
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.ALLOWED_ORIGINS,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_credentials=settings.credentials,
+        allow_methods=["*"],  
+        allow_headers=["*"],  # Allow all headers
+        expose_headers=["*"],
+        max_age=600
+    )
+    
+    app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(
+        AuthMiddleware,
+        exclude_paths={
+            '/api/v1/auth/login',
+            '/api/v1/auth/register',
+            '/api/v1/auth/refresh-token',
+            '/api/v1/auth/forgot-password',
+            '/api/v1/auth/reset-password',
+            '/api/v1/auth/health',
+            '/api/v1/auth/validate-token',  # Make sure this is excluded
+            '/api/health',
+            '/api/docs',
+            '/api/redoc',
+            '/openapi.json'
+        }
     )
 
     # Include routers
