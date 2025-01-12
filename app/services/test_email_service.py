@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from dotenv import load_dotenv
-from email_service import EmailService  # Assuming the previous code is saved as email_service.py
+from email_service import EmailService  
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

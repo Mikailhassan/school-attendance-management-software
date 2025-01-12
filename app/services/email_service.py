@@ -74,7 +74,7 @@ class EmailService:
             USE_CREDENTIALS=config.USE_CREDENTIALS,
             VALIDATE_CERTS=config.VALIDATE_CERTS,
             MAIL_FROM_NAME=config.MAIL_FROM_NAME,
-            TIMEOUT=config.TIMEOUT  # Added timeout to connection config
+            TIMEOUT=config.TIMEOUT  
         )
 
         try:

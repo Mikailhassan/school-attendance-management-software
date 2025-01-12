@@ -13,12 +13,13 @@ from app.middleware.request_id import RequestIDMiddleware
 from app.services.auth_service import SessionManager
 from app.middleware.auth import AuthMiddleware
 import logging
+from dotenv import load_dotenv
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
+load_dotenv() 
 
-# Initialize EmailService
-email_service = EmailService()
+
 
 session_manager = SessionManager(
     redis_url=settings.REDIS_URL,
@@ -66,6 +67,8 @@ def create_app() -> FastAPI:
     async def startup_event():
         await init_db()
         await session_manager.initialize()
+        global email_service
+        email_service = EmailService()  
         async for db in get_db():
             await create_system_school(db)
             await create_super_admin(db)
