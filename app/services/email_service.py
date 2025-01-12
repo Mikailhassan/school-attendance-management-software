@@ -1,6 +1,6 @@
 import os
 from typing import List, Optional
-from pydantic import EmailStr, BaseModel
+from pydantic import BaseModel, EmailStr, validator
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
 from datetime import datetime, time
 import asyncio
@@ -10,38 +10,48 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Logging configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class EmailConfig(BaseModel):
-    """Secure configuration model for email settings"""
+    """Email configuration with secure defaults and validation"""
     MAIL_USERNAME: str
     MAIL_PASSWORD: str
-    MAIL_FROM: str
-    MAIL_PORT: int = 465  # Change to 465 for SSL
+    MAIL_FROM: EmailStr
+    MAIL_PORT: int = 465  # Default to SSL port
     MAIL_SERVER: str = "smtp.gmail.com"
-    MAIL_STARTTLS: bool = False  # Disable STARTTLS
-    MAIL_SSL_TLS: bool = True    # Enable SSL
+    MAIL_FROM_NAME: str = "Yoventa Attendance System"
+    MAIL_STARTTLS: bool = False  # Since we're using SSL
+    MAIL_SSL_TLS: bool = True    # Use SSL instead of STARTTLS for Gmail
     USE_CREDENTIALS: bool = True
     VALIDATE_CERTS: bool = True
-    MAIL_FROM_NAME: str = "Yoventa Attendance System"
+
+    @validator('MAIL_PORT')
+    def validate_port(cls, v):
+        if v not in [465, 587]:  # Common SMTP ports
+            raise ValueError(f"Invalid SMTP port: {v}. Must be 465 (SSL) or 587 (STARTTLS)")
+        return v
 
 class EmailService:
     def __init__(self, config: Optional[EmailConfig] = None):
         """Initialize email service with secure configuration."""
+        # Ensure environment variables are loaded
+        load_dotenv()
+        
         if config is None:
             try:
+                # For Gmail with SSL (port 465)
                 config = EmailConfig(
                     MAIL_USERNAME=os.getenv('EMAIL_USERNAME'),
                     MAIL_PASSWORD=os.getenv('EMAIL_PASSWORD'),
                     MAIL_FROM=os.getenv('EMAIL_FROM'),
-                    MAIL_PORT=int(os.getenv('SMTP_PORT', '587')),
+                    MAIL_PORT=int(os.getenv('SMTP_PORT', '465')),  # Changed default to 465
                     MAIL_SERVER=os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
-                    MAIL_FROM_NAME=os.getenv('MAIL_FROM_NAME', 'Yoventa Attendance System')
+                    MAIL_FROM_NAME=os.getenv('MAIL_FROM_NAME', 'Yoventa Attendance System'),
+                    MAIL_STARTTLS=False,  # Disable STARTTLS when using SSL
+                    MAIL_SSL_TLS=True,    # Enable SSL
+                    USE_CREDENTIALS=True,
+                    VALIDATE_CERTS=True
                 )
                 logger.info(f"Loaded email configuration for user: {config.MAIL_USERNAME}")
             except ValueError as e:
@@ -70,6 +80,8 @@ class EmailService:
             VALIDATE_CERTS=config.VALIDATE_CERTS,
             MAIL_FROM_NAME=config.MAIL_FROM_NAME
         )
+
+        self.fastmail = FastMail(self.conf)
         
         # Initialize FastMail client
         try:
