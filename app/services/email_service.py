@@ -18,40 +18,36 @@ class EmailConfig(BaseModel):
     MAIL_USERNAME: str
     MAIL_PASSWORD: str
     MAIL_FROM: EmailStr
-    MAIL_PORT: int = 465  # Default to SSL port
+    MAIL_PORT: int = 465
     MAIL_SERVER: str = "smtp.gmail.com"
     MAIL_FROM_NAME: str = "Yoventa Attendance System"
-    MAIL_STARTTLS: bool = False  # Since we're using SSL
-    MAIL_SSL_TLS: bool = True    # Use SSL instead of STARTTLS for Gmail
+    MAIL_STARTTLS: bool = False
+    MAIL_SSL_TLS: bool = True
     USE_CREDENTIALS: bool = True
     VALIDATE_CERTS: bool = True
+    TIMEOUT: int = 10  # Added timeout configuration
 
     @validator('MAIL_PORT')
     def validate_port(cls, v):
-        if v not in [465, 587]:  # Common SMTP ports
+        if v not in [465, 587]:
             raise ValueError(f"Invalid SMTP port: {v}. Must be 465 (SSL) or 587 (STARTTLS)")
         return v
 
 class EmailService:
     def __init__(self, config: Optional[EmailConfig] = None):
         """Initialize email service with secure configuration."""
-        # Ensure environment variables are loaded
         load_dotenv()
         
         if config is None:
             try:
-                # For Gmail with SSL (port 465)
                 config = EmailConfig(
                     MAIL_USERNAME=os.getenv('EMAIL_USERNAME'),
                     MAIL_PASSWORD=os.getenv('EMAIL_PASSWORD'),
                     MAIL_FROM=os.getenv('EMAIL_FROM'),
-                    MAIL_PORT=int(os.getenv('SMTP_PORT', '465')),  # Changed default to 465
+                    MAIL_PORT=int(os.getenv('SMTP_PORT', '465')),
                     MAIL_SERVER=os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
                     MAIL_FROM_NAME=os.getenv('MAIL_FROM_NAME', 'Yoventa Attendance System'),
-                    MAIL_STARTTLS=False,  # Disable STARTTLS when using SSL
-                    MAIL_SSL_TLS=True,    # Enable SSL
-                    USE_CREDENTIALS=True,
-                    VALIDATE_CERTS=True
+                    TIMEOUT=int(os.getenv('SMTP_TIMEOUT', '10'))
                 )
                 logger.info(f"Loaded email configuration for user: {config.MAIL_USERNAME}")
             except ValueError as e:
@@ -60,14 +56,13 @@ class EmailService:
 
         # Validate configuration
         if not all([config.MAIL_USERNAME, config.MAIL_PASSWORD, config.MAIL_FROM]):
-            logger.error("Missing required email configuration values")
             missing = []
             if not config.MAIL_USERNAME: missing.append("EMAIL_USERNAME")
             if not config.MAIL_PASSWORD: missing.append("EMAIL_PASSWORD")
             if not config.MAIL_FROM: missing.append("EMAIL_FROM")
             raise ValueError(f"Email configuration is incomplete. Missing: {', '.join(missing)}")
 
-        # Create FastMail configuration
+        # Create FastMail configuration with timeout
         self.conf = ConnectionConfig(
             MAIL_USERNAME=config.MAIL_USERNAME,
             MAIL_PASSWORD=config.MAIL_PASSWORD,
@@ -78,12 +73,10 @@ class EmailService:
             MAIL_SSL_TLS=config.MAIL_SSL_TLS,
             USE_CREDENTIALS=config.USE_CREDENTIALS,
             VALIDATE_CERTS=config.VALIDATE_CERTS,
-            MAIL_FROM_NAME=config.MAIL_FROM_NAME
+            MAIL_FROM_NAME=config.MAIL_FROM_NAME,
+            TIMEOUT=config.TIMEOUT  # Added timeout to connection config
         )
 
-        self.fastmail = FastMail(self.conf)
-        
-        # Initialize FastMail client
         try:
             self.fastmail = FastMail(self.conf)
             logger.info("FastMail client initialized successfully")
@@ -99,7 +92,7 @@ class EmailService:
         subtype: str = "html",
         max_retries: int = 3
     ) -> bool:
-        """Send an email with retry mechanism and exponential backoff"""
+        """Send an email with retry mechanism and detailed error logging"""
         for attempt in range(max_retries):
             try:
                 if not recipients or not subject or not body:
@@ -113,12 +106,20 @@ class EmailService:
                     subtype=subtype
                 )
 
+                # More detailed logging
+                logger.info(f"Attempt {attempt + 1}: Sending email to {', '.join(recipients)}")
                 await self.fastmail.send_message(message)
                 logger.info(f"Email sent successfully to {', '.join(recipients)}")
                 return True
+
             except Exception as e:
                 wait_time = 2 ** attempt
-                logger.warning(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+                logger.error(f"Attempt {attempt + 1}/{max_retries} failed:")
+                logger.error(f"Error type: {type(e).__name__}")
+                logger.error(f"Error details: {str(e)}")
+                import traceback
+                logger.error(f"Traceback:\n{traceback.format_exc()}")
+                
                 if attempt < max_retries - 1:
                     logger.info(f"Retrying in {wait_time} seconds...")
                     await asyncio.sleep(wait_time)
