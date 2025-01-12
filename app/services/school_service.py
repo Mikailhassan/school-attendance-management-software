@@ -24,9 +24,9 @@ from app.core.exceptions import (
     InvalidOperationException,
     
 )
-
 class SchoolService:
     def __init__(self, db: Session, email_service: EmailService):
+        """Initialize SchoolService with database session and email service"""
         self.db = db
         self.email_service = email_service
 
@@ -122,25 +122,25 @@ class SchoolService:
         # If we've exhausted our retries, generate a unique fallback
         timestamp = datetime.utcnow().strftime("%H%M%S")
         return f"SCH-{current_year}-{timestamp}"
-    
+
+
     async def create_school(self, school_data: SchoolCreateRequest, background_tasks: BackgroundTasks) -> dict:
-        """Create a new school with admin account"""
+        """Create a new school with admin account and send welcome email"""
         try:
             await self.validate_school_data(school_data)
         
             registration_number = await self.generate_registration_number()
             temp_password = generate_temporary_password()
             
-            # Convert the entire school_data to dict and process it
             school_dict = school_data.model_dump()
             
-            # Convert class_range to dict explicitly
+            # Process class range data
             if isinstance(school_dict['class_range'], dict):
                 class_range_data = school_dict['class_range']
             else:
                 class_range_data = school_dict['class_range'].model_dump()
 
-            # Remove school_admin from school creation data
+            # Extract admin data
             admin_data = school_dict.pop('school_admin')
 
             # Create school instance
@@ -155,16 +155,17 @@ class SchoolService:
                 county=school_data.county,
                 postal_code=school_data.postal_code,
                 class_system=school_data.class_system,
-                class_range=class_range_data,  # Use the processed dict
+                class_range=class_range_data,
                 extra_info=school_data.extra_info,
                 is_active=True,
                 created_at=datetime.utcnow()
             )
             
-            # Create admin instance
+            # Create admin user
+            admin_name = f"{school_data.name} Administrator"
             school_admin = User(
                 email=admin_data['email'],
-                name=f"{school_data.name} Administrator",
+                name=admin_name,
                 password_hash=get_password_hash(temp_password),
                 role=UserRole.SCHOOL_ADMIN,
                 is_active=True,
@@ -172,36 +173,32 @@ class SchoolService:
                 created_at=datetime.utcnow()
             )
 
-            # Database operations
             try:
+                # Database operations
                 self.db.add(new_school)
                 await self.db.flush()
                 
                 school_admin.school_id = new_school.id
                 self.db.add(school_admin)
-                
                 await self.db.commit()
                 await self.db.refresh(new_school)
                 
-                # Send welcome email
-                email_sent = await self.email_service.send_school_admin_credentials(
+                # Send welcome email in background
+                background_tasks.add_task(
+                    self._send_admin_welcome_email,
                     email=admin_data['email'],
-                    name=f"{school_data.name} Administrator",
+                    name=admin_name,
                     password=temp_password,
                     school_name=school_data.name
                 )
-
-                if not email_sent:
-                    logger.warning(f"Failed to send welcome email to school: {school_data.name}")
-
+                
                 logger.info(f"Created new school: {school_data.name} with registration number: {registration_number}")
                 
                 return {
                     "message": "School and admin account created successfully",
                     "registration_number": registration_number,
                     "school_id": new_school.id,
-                    "admin_email": admin_data['email'],
-                    "email_sent": email_sent
+                    "admin_email": admin_data['email']
                 }
                 
             except Exception as e:
@@ -218,6 +215,80 @@ class SchoolService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=str(e)
             )
+
+    async def _send_admin_welcome_email(
+        self,
+        email: str,
+        name: str,
+        password: str,
+        school_name: str
+    ) -> bool:
+        """Send welcome email to school admin with credentials"""
+        try:
+            email_sent = await self.email_service.send_school_admin_credentials(
+                email=email,
+                name=name,
+                password=password,
+                school_name=school_name
+            )
+            
+            if email_sent:
+                logger.info(f"Welcome email sent successfully to school admin: {email}")
+            else:
+                logger.error(f"Failed to send welcome email to school admin: {email}")
+            
+            return email_sent
+            
+        except Exception as e:
+            logger.error(f"Error sending welcome email to {email}: {str(e)}")
+            return False
+
+    async def deactivate_school(self, registration_number: str) -> School:
+        """Deactivate a school and notify admin"""
+        school = await self.get_school_by_registration(registration_number)
+        
+        if not school.is_active:
+            raise InvalidOperationException("School is already inactive")
+            
+        school.is_active = False
+        school.updated_at = datetime.utcnow()
+        
+        # Get school admin
+        admin_query = select(User).where(
+            and_(
+                User.school_id == school.id,
+                User.role == UserRole.SCHOOL_ADMIN
+            )
+        )
+        result = await self.db.execute(admin_query)
+        admin = result.scalar_one_or_none()
+        
+        # Deactivate all users
+        await self.db.execute(
+            update(User)
+            .where(User.school_id == school.id)
+            .values(is_active=False, updated_at=datetime.utcnow())
+        )
+        
+        await self.db.commit()
+        await self.db.refresh(school)
+        
+        # Send deactivation notification if admin exists
+        if admin:
+            try:
+                # You would need to add this method to your EmailService
+                await self.email_service.send_school_deactivation_notice(
+                    email=admin.email,
+                    name=admin.name,
+                    school_name=school.name
+                )
+            except Exception as e:
+                logger.error(f"Failed to send deactivation notice to {admin.email}: {str(e)}")
+        
+        logger.info(f"Deactivated school: {registration_number}")
+        return school
+
+    # ... (rest of the SchoolService methods remain the same)
 
     async def get_school_by_registration(self, registration_number: str) -> School:
         """Get school by registration number"""
