@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_, or_, desc, update
 from typing import List, Optional, Dict, Any
@@ -123,125 +123,130 @@ class SchoolService:
         timestamp = datetime.utcnow().strftime("%H%M%S")
         return f"SCH-{current_year}-{timestamp}"
 
-
     async def create_school(self, school_data: SchoolCreateRequest, background_tasks: BackgroundTasks) -> dict:
-        """Create a new school with admin account and send welcome email"""
-        try:
-            await self.validate_school_data(school_data)
-        
-            registration_number = await self.generate_registration_number()
-            temp_password = generate_temporary_password()
-            
-            school_dict = school_data.model_dump()
-            
-            # Process class range data
-            if isinstance(school_dict['class_range'], dict):
-                class_range_data = school_dict['class_range']
-            else:
-                class_range_data = school_dict['class_range'].model_dump()
-
-            # Extract admin data
-            admin_data = school_dict.pop('school_admin')
-
-            # Create school instance
-            new_school = School(
-                registration_number=registration_number,
-                name=school_data.name,
-                email=school_data.email,
-                phone=school_data.phone,
-                address=school_data.address,
-                website=str(school_data.website) if school_data.website else None,
-                school_type=school_data.school_type,
-                county=school_data.county,
-                postal_code=school_data.postal_code,
-                class_system=school_data.class_system,
-                class_range=class_range_data,
-                extra_info=school_data.extra_info,
-                is_active=True,
-                created_at=datetime.utcnow()
-            )
-            
-            # Create admin user
-            admin_name = f"{school_data.name} Administrator"
-            school_admin = User(
-                email=admin_data['email'],
-                name=admin_name,
-                password_hash=get_password_hash(temp_password),
-                role=UserRole.SCHOOL_ADMIN,
-                is_active=True,
-                phone=admin_data['phone'],
-                created_at=datetime.utcnow()
-            )
-
+            """Create a new school with admin account using provided password"""
             try:
-                # Database operations
-                self.db.add(new_school)
-                await self.db.flush()
+                await self.validate_school_data(school_data)
+            
+                registration_number = await self.generate_registration_number()
+                school_dict = school_data.model_dump()
                 
-                school_admin.school_id = new_school.id
-                self.db.add(school_admin)
-                await self.db.commit()
-                await self.db.refresh(new_school)
+                # Process class range data
+                if isinstance(school_dict['class_range'], dict):
+                    class_range_data = school_dict['class_range']
+                else:
+                    class_range_data = school_dict['class_range'].model_dump()
+
+                # Extract admin data
+                admin_data = school_dict.pop('school_admin')
                 
-                # Send welcome email in background
-                background_tasks.add_task(
-                    self._send_admin_welcome_email,
+                # Get admin password from form data instead of generating it
+                admin_password = admin_data.get('password')
+                if not admin_password:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Admin password is required"
+                    )
+
+                # Create school instance
+                new_school = School(
+                    registration_number=registration_number,
+                    name=school_data.name,
+                    email=school_data.email,
+                    phone=school_data.phone,
+                    address=school_data.address,
+                    website=str(school_data.website) if school_data.website else None,
+                    school_type=school_data.school_type,
+                    county=school_data.county,
+                    postal_code=school_data.postal_code,
+                    class_system=school_data.class_system,
+                    class_range=class_range_data,
+                    extra_info=school_data.extra_info,
+                    is_active=True,
+                    created_at=datetime.utcnow()
+                )
+                
+                # Create admin user 
+                admin_name = f"{school_data.name} Administrator"
+                school_admin = User(
                     email=admin_data['email'],
                     name=admin_name,
-                    password=temp_password,
-                    school_name=school_data.name
+                    password_hash=get_password_hash(admin_password),
+                    role=UserRole.SCHOOL_ADMIN,
+                    is_active=True,
+                    phone=admin_data['phone'],
+                    created_at=datetime.utcnow()
                 )
-                
-                logger.info(f"Created new school: {school_data.name} with registration number: {registration_number}")
-                
-                return {
-                    "message": "School and admin account created successfully",
-                    "registration_number": registration_number,
-                    "school_id": new_school.id,
-                    "admin_email": admin_data['email']
-                }
-                
+
+                try:
+                    # Database operations
+                    self.db.add(new_school)
+                    await self.db.flush()
+                    
+                    school_admin.school_id = new_school.id
+                    self.db.add(school_admin)
+                    await self.db.commit()
+                    await self.db.refresh(new_school)
+                    
+                    
+                    # background_tasks.add_task(
+                    #     self._send_admin_welcome_email,
+                    #     email=admin_data['email'],
+                    #     name=admin_name,
+                    #     password=admin_password,
+                    #     school_name=school_data.name
+                    # )
+                    
+                    logger.info(f"Created new school: {school_data.name} with registration number: {registration_number}")
+                    
+                    return {
+                        "message": "School and admin account created successfully",
+                        "registration_number": registration_number,
+                        "school_id": new_school.id,
+                        "admin_email": admin_data['email']
+                    }
+                    
+                except Exception as e:
+                    await self.db.rollback()
+                    logger.error(f"Database error while creating school: {str(e)}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Database error: {str(e)}"
+                    )
+                    
             except Exception as e:
-                await self.db.rollback()
-                logger.error(f"Database error while creating school: {str(e)}")
+                logger.error(f"Error creating school: {str(e)}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Database error: {str(e)}"
+                    detail=str(e)
                 )
-                
-        except Exception as e:
-            logger.error(f"Error creating school: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e)
-            )
 
-    async def _send_admin_welcome_email(
-        self,
-        email: str,
-        name: str,
-        password: str,
-        school_name: str
-    ) -> bool:
-        """Send welcome email to school admin with credentials"""
-        try:
-            email_sent = await self.email_service.send_school_admin_credentials(
-                email=email,
-                name=name,
-                password=password,
-                school_name=school_name
-            )
+    # async def _send_admin_welcome_email(
+    #     self,
+    #     email: str,
+    #     name: str,
+    #     password: str,
+    #     school_name: str
+    # ) -> bool:
+    #     """Send welcome email to school admin with credentials"""
+    #     try:
+    #         email_sent = await self.email_service.send_school_admin_credentials(
+    #             email=email,
+    #             name=name,
+    #             password=password,
+    #             school_name=school_name
+    #         )
             
-            if email_sent:
-                logger.info(f"Welcome email sent successfully to school admin: {email}")
-            else:
-                logger.error(f"Failed to send welcome email to school admin: {email}")
+    #         if email_sent:
+    #             logger.info(f"Welcome email sent successfully to school admin: {email}")
+    #         else:
+    #             logger.error(f"Failed to send welcome email to school admin: {email}")
             
-            return email_sent
+    #         return email_sent
             
-        except Exception as e:
-            logger.error(f"Error sending welcome email to {email}: {str(e)}")
-            return False
+    #     except Exception as e:
+    #         logger.error(f"Error sending welcome email to {email}: {str(e)}")
+    #         return False
 
     async def deactivate_school(self, registration_number: str) -> School:
         """Deactivate a school and notify admin"""
@@ -288,7 +293,7 @@ class SchoolService:
         logger.info(f"Deactivated school: {registration_number}")
         return school
 
-    # ... (rest of the SchoolService methods remain the same)
+
 
     async def get_school_by_registration(self, registration_number: str) -> School:
         """Get school by registration number"""
