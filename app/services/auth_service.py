@@ -6,11 +6,15 @@ from sqlalchemy import select, and_, delete, func
 from sqlalchemy.orm import selectinload
 from jose import jwt, JWTError  
 from passlib.context import CryptContext
+from app.services.session_manager import SessionManager
+from app.core.config import settings
+from app.core.redis import get_redis, SESSION_TTL
 import uuid
 import re
 import asyncio
 from app.core.database import get_db
 from pydantic_settings import BaseSettings
+from pydantic import validator, field_validator
 from app.models import User, RevokedToken, FailedLoginAttempt
 from app.core.errors import (
     ConfigurationError,
@@ -25,21 +29,51 @@ from app.schemas.enums import UserRole
 from app.core.errors import get_error_message
 
 class JWTSettings(BaseSettings):
-    SECRET_KEY: str = "your-super-secret-key-replace-in-production"
+    SECRET_KEY: str = settings.SECRET_KEY
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    TOKEN_ISSUER: str = "school_attendance_system"
+    TOKEN_AUDIENCE: str = "yoventa"
+    SESSION_EXPIRE_MINUTES: int = 60
+    
+    # Security settings
     FAILED_LOGIN_ATTEMPTS: int = 5
     LOCKOUT_DURATION_MINUTES: int = 15
     RATE_LIMIT_MAX_REQUESTS: int = 5
     RATE_LIMIT_WINDOW_SECONDS: int = 300
+    
+    # Cookie settings
     COOKIE_SECURE: bool = True
     COOKIE_SAMESITE: str = "lax"
     COOKIE_PATH: str = "/"
     
+    # Optional: Add type hints for common JWT claims
+    REQUIRED_CLAIMS: list = ["exp", "iat", "sub", "type", "aud", "iss"]
+    OPTIONAL_CLAIMS: list = ["email", "role", "school_id", "user_id", "device_info"]
 
     class Config:
         env_prefix = "JWT_"
+        case_sensitive = True
+
+    @field_validator("TOKEN_ISSUER", "TOKEN_AUDIENCE", mode="before")
+    @classmethod
+    def validate_token_settings(cls, v, info):
+        if not v:
+            if info.field_name == "TOKEN_ISSUER":
+                return "school_attendance_system"
+            if info.field_name == "TOKEN_AUDIENCE":
+                return "yoventa"
+        return v
+
+    @field_validator("COOKIE_SAMESITE")
+    @classmethod
+    def validate_samesite(cls, v):
+        allowed_values = ["lax", "strict", "none"]
+        if v.lower() not in allowed_values:
+            raise ValueError(f"COOKIE_SAMESITE must be one of {allowed_values}")
+        return v.lower()
+
      
 class SecurityLogging:
     """Secure logging utilities for authentication system"""
@@ -88,32 +122,25 @@ class SecurityLogging:
             logger.error("Auth event", extra=log_data)
         else:
             logger.info("Auth event", extra=log_data)        
-
 class AuthService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.settings = JWTSettings()
         self.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-        self._rate_limit_cache = {}
         
+        # Single source of truth for settings
+        self._lockout_duration_minutes = self.settings.LOCKOUT_DURATION_MINUTES
+        self._max_login_attempts = self.settings.FAILED_LOGIN_ATTEMPTS
+        self._session_expire_minutes = self.settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        
+        # Initialize storage with proper typing
+        self.token_blacklist: Set[str] = set()
+        self.active_sessions: Dict[str, Dict[str, Any]] = {}
+        self.login_attempts: Dict[str, Dict[str, Any]] = {}
+        
+        # Initialize locks
         self.session_lock = asyncio.Lock()
         self.rate_limit_lock = asyncio.Lock()
-        
-        # Initialize storage
-        self.token_blacklist = set()
-        self.active_sessions = {}
-        self.login_attempts = {}
-        
-        self._lockout_duration_minutes = getattr(JWTSettings, 'LOCKOUT_DURATION_MINUTES', 15)
-        self._max_login_attempts = getattr(JWTSettings, 'MAX_LOGIN_ATTEMPTS', 5)
-        
-    @property
-    def lockout_duration_minutes(self) -> int:
-        return self._lockout_duration_minutes
-
-    @property
-    def max_login_attempts(self) -> int:
-        return self._max_login_attempts
 
 
 
@@ -174,9 +201,9 @@ class AuthService:
             key = f"{email}:{ip}"
             attempts = self.login_attempts.get(key, {"count": 0, "timestamp": None})
             
-            if attempts["count"] >= self.max_login_attempts:
+            if attempts["count"] >= self._max_login_attempts:  # Fixed: Using _max_login_attempts
                 if attempts["timestamp"]:
-                    lockout_time = attempts["timestamp"] + timedelta(minutes=self.lockout_duration_minutes)
+                    lockout_time = attempts["timestamp"] + timedelta(minutes=self._lockout_duration_minutes)
                     if datetime.now(timezone.utc) < lockout_time:
                         time_remaining = (lockout_time - datetime.now(timezone.utc)).seconds // 60
                         logger.warning(
@@ -200,6 +227,8 @@ class AuthService:
                                 "ip": ip
                             }
                         )
+
+
 
     def get_cookie_settings(self, request: Request) -> Dict[str, Any]:
         """Get secure cookie settings based on environment"""
@@ -338,7 +367,7 @@ class AuthService:
                     "email": email,
                     "ip": ip,
                     "attempt_count": attempts["count"],
-                    "max_attempts": self.max_login_attempts
+                    "max_attempts": self._max_login_attempts  
                 }
             )
 
@@ -355,15 +384,14 @@ class AuthService:
                         "ip": ip
                     }
                 )
-                
+                    
     async def create_token(
             self,
             data: Dict[str, Any],
             token_type: str = "access"
         ) -> str:
-        """Create a new token with improved error handling"""
+        """Create a new token with session management"""
         try:
-            # Validate required data
             if not data.get('sub'):
                 raise ValueError("Missing required 'sub' claim in token data")
                 
@@ -373,10 +401,10 @@ class AuthService:
             # Set expiration based on token type
             if token_type == "access":
                 expire = current_time + timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-                # Create session ID for access tokens
                 try:
-                    session_id = await self._create_session(str(data['sub']), data)
+                    session_id = await self.create_session(str(data['sub']), data)
                     to_encode['session_id'] = session_id
+                    to_encode['jti'] = session_id
                 except Exception as e:
                     logger.error("Session creation failed", exc_info=True)
                     raise AuthenticationError(
@@ -385,13 +413,15 @@ class AuthService:
                     )
             else:
                 expire = current_time + timedelta(days=self.settings.REFRESH_TOKEN_EXPIRE_DAYS)
+                to_encode['jti'] = str(uuid.uuid4())
             
-            # Add standard claims
+            # Add standard claims including issuer
             to_encode.update({
                 "exp": expire,
                 "iat": current_time,
                 "type": token_type,
-                "jti": str(uuid.uuid4())
+                "iss": self.settings.TOKEN_ISSUER,  # Add issuer claim
+                "aud": self.settings.TOKEN_AUDIENCE
             })
             
             token = jwt.encode(
@@ -405,7 +435,9 @@ class AuthService:
                 extra={
                     "user_id": data.get('sub'),
                     "token_type": token_type,
-                    "expires": expire.isoformat()
+                    "expires": expire.isoformat(),
+                    "issuer": self.settings.TOKEN_ISSUER,  # Log issuer for debugging
+                    "session_id": to_encode.get('session_id', None)
                 }
             )
             
@@ -413,7 +445,6 @@ class AuthService:
             
         except AuthenticationError:
             raise
-            
         except Exception as e:
             logger.error(
                 "Token creation failed",
@@ -429,81 +460,99 @@ class AuthService:
                 error_code="TOKEN_CREATION_ERROR"
             )
 
-
     async def verify_token(self, token: str, expected_type: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Verify and decode a JWT token, including session validation
-        """
+        """Verify and decode a JWT token with session validation"""
+        session_manager = None
         try:
-            # Strip 'Bearer ' prefix if present
+            # Clean token input
             if token.startswith("Bearer "):
                 token = token[7:]
             
-            # Decode the token
-            payload = jwt.decode(
-                token,
-                self.settings.SECRET_KEY,
-                algorithms=[self.settings.ALGORITHM]
-            )
+            try:
+                jwt.get_unverified_header(token)
+            except JWTError:
+                logger.warning("Invalid token structure")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token format"
+                )
             
-            # Basic claim validation
-            token_type = payload.get("type")
-            if expected_type and token_type != expected_type:
-                raise jwt.JWTError(f"Invalid token type: expected {expected_type}")
+            try:
+                payload = jwt.decode(
+                    token,
+                    self.settings.SECRET_KEY,
+                    algorithms=[self.settings.ALGORITHM],
+                    audience=self.settings.TOKEN_AUDIENCE,
+                    issuer=self.settings.TOKEN_ISSUER
+                )
+            except jwt.InvalidIssuerError:
+                logger.warning(
+                    "Token issuer validation failed",
+                    extra={"expected_issuer": self.settings.TOKEN_ISSUER}
+                )
+                raise JWTError("Invalid token issuer")
+            except jwt.InvalidAudienceError:
+                logger.warning(
+                    "Token audience validation failed",
+                    extra={"expected_audience": self.settings.TOKEN_AUDIENCE}
+                )
+                raise JWTError("Invalid token audience")
+            except jwt.ExpiredSignatureError:
+                logger.warning("Token has expired")
+                raise JWTError("Token has expired")
+            except JWTError as e:
+                logger.warning(f"Token validation failed: {str(e)}")
+                raise
+            
+            # Validate token claims
+            self._validate_token_claims(payload, expected_type)
+            
+            # Check token revocation before session validation
+            jti = payload.get('jti')
+            if jti:
+                try:
+                    is_revoked = await self.check_token_revocation(jti)
+                    if is_revoked:
+                        logger.warning(f"Token {jti} has been revoked")
+                        raise JWTError("Token has been revoked")
+                except AttributeError as e:
+                    logger.error(f"Token revocation check failed: {str(e)}", exc_info=True)
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Unable to verify token status"
+                    )
             
             # Session validation for access tokens
-            if token_type == "access":
+            if payload.get("type") == "access":
                 session_id = payload.get("session_id")
                 if not session_id:
-                    logger.warning("Missing session ID in access token", extra={"user_id": payload.get("sub")})
-                    raise jwt.JWTError("Invalid token: missing session")
+                    logger.warning("Missing session ID in access token")
+                    raise JWTError("Invalid token: missing session")
+                    
+                session_manager = SessionManager()
+                await session_manager.initialize()
                 
-                session = await self._validate_session(session_id)
+                session = await session_manager._validate_session(session_id)
                 if not session:
-                    logger.warning("Invalid or expired session", extra={"session_id": session_id})
-                    raise jwt.JWTError("Invalid token: session expired")
-            
-            # Check if token has been revoked - using correct attribute name
-            if hasattr(self, 'token_blacklist') and token in self.token_blacklist:
-                raise jwt.JWTError("Token has been revoked")
-            
-            logger.debug(
-                "Token verified successfully",
-                extra={
-                    "token_type": token_type,
-                    "user_id": payload.get("sub"),
-                    "exp": payload.get("exp")
-                }
-            )
+                    raise JWTError("Invalid token: session expired")
             
             return payload
             
-        except jwt.ExpiredSignatureError:
-            logger.warning("Token expired", extra={"token_type": expected_type})
+        except JWTError as e:
+            logger.warning(f"Token verification failed: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has expired"
+                detail=str(e)
             )
-            
-        except jwt.JWTError as e:
-            logger.warning(f"Invalid token: {str(e)}", extra={"token_type": expected_type})
-            if "Signature verification failed" in str(e):
-                logger.error("Token signature verification failed - possible invalid secret key or tampered token")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
-            
         except Exception as e:
-            logger.error(
-                "Token verification failed",
-                extra={"error_type": type(e).__name__},
-                exc_info=True
-            )
+            logger.error("Unexpected error during token verification", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials"
             )
+        finally:
+            if session_manager:
+                await session_manager.close()
     def _validate_token_claims(self, payload: Dict[str, Any], expected_type: Optional[str]) -> None:
         """Separate method for token claims validation"""
         if not payload.get("sub"):
@@ -517,6 +566,9 @@ class AuthService:
         
         if payload.get("iss") != self.settings.TOKEN_ISSUER:
             raise JWTError("Invalid token issuer")
+            
+        if payload.get("aud") != self.settings.TOKEN_AUDIENCE:
+            raise JWTError("Invalid token audience")
 
     async def revoke_token(self, token: str) -> bool:
         """Revoke a JWT token"""
@@ -543,32 +595,45 @@ class AuthService:
             logger.error(f"Error revoking token: {str(e)}")
             return False
 
-    async def check_token_revocation(self, token: str) -> bool:
-        """Check if token has been revoked"""
+    async def check_token_revocation(self, jti: str) -> bool:
+        """
+        Check if a token has been revoked
+        
+        Args:
+            jti: The JWT ID to check
+            
+        Returns:
+            bool: True if token is revoked, False otherwise
+        """
         try:
-            if token.startswith("Bearer "):
-                token = token[7:]
+            # Create the select statement
+            query = select(RevokedToken).where(RevokedToken.jti == jti)
+            
+            # Since self.db is already an AsyncSession, we can use it directly
+            async with self.db.begin() as transaction:
+                # Execute query using the session
+                result = await self.db.execute(query)
+                revoked_token = result.scalar_one_or_none()
                 
-            payload = jwt.decode(
-                token,
-                self.settings.SECRET_KEY,
-                algorithms=[self.settings.ALGORITHM]
-            )
-            jti = payload.get('jti')
-            
-            if not jti:
-                return True
-            
-            query = (
-                select(RevokedToken)
-                .where(RevokedToken.jti == jti)
-            )
-            result = await self.db.execute(query)
-            return result.scalar_one_or_none() is not None
-            
+                is_revoked = revoked_token is not None
+                
+                if is_revoked:
+                    logger.info(f"Token {jti} found in revocation list")
+                
+                return is_revoked
+                    
         except Exception as e:
-            logger.error(f"Token revocation check error: {str(e)}")
-            return True
+            logger.error(
+                "Failed to check token revocation status",
+                extra={
+                    "jti": jti,
+                    "error": str(e)
+                },
+                exc_info=True
+            )
+            # Fail open - treat any errors as non-revoked
+            # Change this to True if you want to fail secure
+            return False
     async def authenticate_user(
         self,
         email: str,
@@ -577,81 +642,145 @@ class AuthService:
         request: Request,
         language: str = 'en'
     ) -> LoginResponse:
-        """Authenticate user and generate tokens"""
-        client_ip = request.client.host if request.client else "unknown"
-        
-        # Check rate limit and account lockout
-        await self.check_rate_limit(email, client_ip)  
-        await self.check_account_lockout(email, language)
-        
-        # Get user from database directly
-        user = await self.get_user_by_email(email)
-        if not user:
-            await self.record_failed_attempt(email, request)
-            raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
+        """Authenticate user and generate tokens with proper error handling and logging"""
+        try:
+            client_ip = request.client.host if request.client else "unknown"
+            
+            # Check rate limit and account lockout
+            await self.check_rate_limit(email, client_ip)  
+            await self.check_account_lockout(email, language)
+            
+            # Get user from database directly
+            user = await self.get_user_by_email(email)
+            if not user:
+                await self.record_failed_attempt(email, client_ip)
+                logger.warning(f"Login attempt failed: User not found for email {email}")
+                raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
 
-        # Verify password - synchronous operation
-        if not self.verify_password(password, user.password_hash):
-            await self.record_failed_attempt(email, request)
-            raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
+            # Verify password - synchronous operation
+            if not self.verify_password(password, user.password_hash):
+                await self.record_failed_attempt(email, client_ip)
+                logger.warning(f"Login attempt failed: Invalid password for user {email}")
+                raise InvalidCredentialsException(get_error_message("invalid_credentials", language))
 
-        if not user.is_active:
-            raise AuthenticationError(get_error_message("account_inactive", language))
+            if not user.is_active:
+                logger.warning(f"Login attempt failed: Inactive account for user {email}")
+                raise AuthenticationError(get_error_message("account_inactive", language))
 
-        # Clear failed attempts on successful login
-        await self.clear_failed_attempts(email, client_ip)
+            # Clear failed attempts on successful login
+            await self.clear_failed_attempts(email, client_ip)
 
-        # Generate token data
-        token_data = {
-            "sub": str(user.id),
-            "email": user.email,
-            "role": user.role,
-            "school_id": str(user.school_id) if user.school_id else None,
-            "user_id": user.id,
-            "device_info": {
-                "ip": client_ip,
-                "user_agent": request.headers.get("user-agent")
+            # Generate token data with comprehensive claims
+            token_data = {
+                "sub": str(user.id),
+                "email": user.email,
+                "role": user.role,
+                "school_id": str(user.school_id) if user.school_id else None,
+                "user_id": str(user.id), 
+                "device_info": {
+                    "ip": client_ip,
+                    "user_agent": request.headers.get("user-agent")
+                },
+                "iss": self.settings.TOKEN_ISSUER,  
             }
-        }
 
-        # Generate tokens
-        access_token = await self.create_token(token_data, "access")
-        refresh_token = await self.create_token(token_data, "refresh")
+            # Generate tokens with logging
+            current_time = datetime.now(timezone.utc)
+            logger.debug(
+                "Generating tokens",
+                extra={
+                    "user_id": str(user.id),
+                    "email": user.email,
+                    "timestamp": current_time.isoformat()
+                }
+            )
 
-        # Set secure cookies
-        response.set_cookie(
-            key="refresh_token",
-            value=refresh_token,
-            httponly=True,
-            secure=True,  # Always use secure in production
-            samesite="lax",
-            path="/",
-            max_age=7 * 24 * 3600  # 7 days
-        )
-        
-        response.set_cookie(
-            key="access_token",
-            value=access_token,
-            httponly=True,
-            secure=True,
-            samesite="lax",
-            path="/",
-            max_age=3600  # 1 hour
-        )
-        
-        # Set security headers
-        response.headers.update({
-            "X-Content-Type-Options": "nosniff",
-            "X-Frame-Options": "DENY",
-            "X-XSS-Protection": "1; mode=block",
-            "Strict-Transport-Security": "max-age=31536000; includeSubDomains"
-        })
+            # Generate tokens
+            access_token = await self.create_token(token_data, "access")
+            refresh_token = await self.create_token(token_data, "refresh")
 
-        return LoginResponse(
-            user=UserResponse.from_orm(user).model_dump(),
-            access_token=access_token,
-            refresh_token=refresh_token
-        )
+            # Calculate and log expiration times
+            access_expire = current_time + timedelta(minutes=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+            refresh_expire = current_time + timedelta(days=self.settings.REFRESH_TOKEN_EXPIRE_DAYS)
+
+            logger.debug(
+                "Token expiration times",
+                extra={
+                    "access_token_expires": access_expire.isoformat(),
+                    "refresh_token_expires": refresh_expire.isoformat()
+                }
+            )
+
+            # Get cookie settings based on environment
+            cookie_settings = self.get_cookie_settings(request)
+
+            # Set access token cookie
+            response.set_cookie(
+                key="access_token",
+                value=access_token,
+                max_age=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Convert to seconds
+                **cookie_settings
+            )
+            
+            # Set refresh token cookie with restricted path
+            refresh_cookie_settings = {
+                **cookie_settings,
+                "path": "/api/v1/auth/refresh-token"  # Restrict refresh token to refresh endpoint
+            }
+            response.set_cookie(
+                key="refresh_token",
+                value=refresh_token,
+                max_age=self.settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,  # Convert to seconds
+                **refresh_cookie_settings
+            )
+            
+            # Set security headers
+            response.headers.update({
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "X-XSS-Protection": "1; mode=block",
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains"
+            })
+
+            # Log successful login
+            logger.info(
+                "User logged in successfully",
+                extra={
+                    "user_id": str(user.id),
+                    "email": user.email,
+                    "ip": client_ip
+                    
+                }
+            )
+
+            return LoginResponse(
+                user=UserResponse.from_orm(user).model_dump(),
+                access_token=access_token,
+                refresh_token=refresh_token,
+                token_type="bearer",
+                expires_in=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Return expiration in seconds
+                refresh_expires_in=self.settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
+            )
+
+        except (InvalidCredentialsException, AuthenticationError) as e:
+            # Re-raise known exceptions
+            raise
+
+        except Exception as e:
+            # Log unexpected errors
+            logger.error(
+                "Unexpected error during authentication",
+                extra={
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "email": email
+                },
+                exc_info=True
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=get_error_message("login_failed", language)
+            )
         
     async def cleanup_expired_data(self) -> None:
         """Cleanup expired tokens and failed login attempts"""
@@ -692,6 +821,9 @@ class AuthService:
     ) -> Dict[str, str]:
         """Refresh access token using refresh token"""
         try:
+            # Clean the refresh token
+            refresh_token = refresh_token.replace("Bearer ", "").strip()
+            
             # Check if refresh token is revoked
             if await self.check_token_revocation(refresh_token):
                 raise AuthenticationError("Refresh token has been revoked")
@@ -699,14 +831,14 @@ class AuthService:
             # Verify refresh token
             payload = await self.verify_token(refresh_token)
             
-            if payload.get("type") != "refresh":
+            if not payload or payload.get("type") != "refresh":
                 raise AuthenticationError(
                     get_error_message("invalid_refresh_token", language)
                 )
             
-            # Verify token expiration
+            # Verify token expiration with grace period
             exp = payload.get("exp")
-            if not exp or datetime.utcnow() > datetime.fromtimestamp(exp):
+            if not exp or datetime.utcnow() > datetime.fromtimestamp(exp + 300):  # 5 min grace period
                 raise AuthenticationError("Refresh token has expired")
             
             # Create new token data
@@ -723,18 +855,14 @@ class AuthService:
                 token_type="access"
             )
             
-            # Set new access token cookie
-            cookie_settings = self.get_cookie_settings(request)
-            response.set_cookie(
-                key="access_token",
-                value=f"Bearer {new_access_token}",
-                max_age=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-                **cookie_settings
-            )
-            
             # Log successful token refresh
-            logger.info("Access token refreshed successfully",
-                       extra={"user_id": payload.get("sub")})
+            logger.info(
+                "Access token refreshed successfully",
+                extra={
+                    "user_id": payload.get("sub"),
+                    "email": payload.get("email")
+                }
+            )
             
             return {
                 "access_token": new_access_token,
@@ -742,24 +870,30 @@ class AuthService:
             }
             
         except (JWTError, AuthenticationError) as e:
-            logger.warning(f"Token refresh failed: {str(e)}",
-                         extra={"error": str(e)})
+            logger.warning(
+                f"Token refresh failed: {str(e)}",
+                extra={
+                    "error": str(e),
+                    "refresh_token": refresh_token[:10] + "..."  
+                }
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={
                     "message": get_error_message("token_refresh_failed", language),
-                    "error_code": "TOKEN_REFRESH_FAILED"
-                },
-                headers={"WWW-Authenticate": "Bearer"}
+                    "code": "TOKEN_REFRESH_FAILED"
+                }
             )
         except Exception as e:
-            logger.error(f"Unexpected error during token refresh: {str(e)}",
-                        extra={"error_type": type(e).__name__})
+            logger.error(
+                f"Unexpected error during token refresh: {str(e)}",
+                extra={"error_type": type(e).__name__}
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
                     "message": get_error_message("token_refresh_failed", language),
-                    "error_code": "INTERNAL_SERVER_ERROR"
+                    "code": "INTERNAL_SERVER_ERROR"
                 }
             )
 
@@ -770,10 +904,17 @@ class AuthService:
         request: Request,
         language: str = 'en'
     ) -> Dict[str, str]:
-        """Log out user by revoking their tokens and clearing cookies"""
+        """Log out user and end their session"""
         try:
-            # Revoke the token
             if token:
+                # Get session ID from token
+                payload = await self.verify_token(token)
+                session_id = payload.get("session_id")
+                
+                if session_id:
+                    await self.end_session(session_id)
+                
+                # Revoke the token
                 await self.revoke_token(token)
             
             # Clear auth cookies
@@ -789,22 +930,38 @@ class AuthService:
             )
 
     async def validate_token(
-        self,
-        token: str | None,
-        language: str = 'en'
-    ) -> Dict[str, Any]:
+            self,
+            token: str | None,
+            language: str = 'en'
+        ) -> Dict[str, Any]:
         """Validate token and return payload"""
         if not token:
+            logger.debug("No token provided to validate_token")
             raise AuthenticationError("No token provided")
             
         try:
             # Verify the token
+            logger.debug("Attempting to verify token")
             payload = await self.verify_token(token)
             
             # Verify token type is access token
             if payload.get("type") != "access":
+                logger.debug(f"Invalid token type: {payload.get('type')}")
                 raise AuthenticationError("Invalid token type")
                 
+            # Validate session
+            session_id = payload.get("session_id")
+            if session_id:
+                session_manager = SessionManager()
+                try:
+                    await session_manager.initialize()
+                    session = await session_manager._validate_session(session_id)
+                    if not session:
+                        raise AuthenticationError("Invalid or expired session")
+                finally:
+                    await session_manager.close()
+                
+            logger.debug("Token validated successfully")
             return payload
             
         except (JWTError, AuthenticationError) as e:
@@ -813,78 +970,85 @@ class AuthService:
         except Exception as e:
             logger.error(f"Unexpected error during token validation: {str(e)}")
             raise AuthenticationError("Token validation failed")
+
         
-    async def _create_session(self, user_id: str, token_data: Dict[str, Any]) -> str:
-        """Create a new session with proper error handling"""
+        
+    async def create_session(self, user_id: str, token_data: Dict[str, Any]) -> str:
+        """Create a new session using SessionManager"""
         try:
-            async with self.session_lock:  
-                session_id = str(uuid.uuid4())
-                current_time = datetime.now(timezone.utc)
-                
-                self.active_sessions[session_id] = {  
-                    "user_id": user_id,
-                    "created_at": current_time,
-                    "last_activity": current_time,
-                    "token_data": token_data,
-                    "device_info": token_data.get("device_info", {}),
-                    "ip_address": token_data.get("ip_address")
-                }
-                
-                logger.debug(
-                    "Session created",
+            session_manager = SessionManager()
+            await session_manager.initialize()
+            
+            try:
+                session_id = await session_manager._create_session(user_id, token_data)
+                return session_id
+            except Exception as e:
+                logger.error(
+                    "Session creation failed",
+                    exc_info=True,
                     extra={
-                        "session_id": session_id,
+                        "error_type": type(e).__name__,
                         "user_id": user_id
                     }
                 )
-                
-                return session_id
+                raise AuthenticationError("Failed to create session")
+            finally:
+                await session_manager.close()
                 
         except Exception as e:
             logger.error(
-                "Session creation failed",
+                "Session manager initialization failed",
                 exc_info=True,
                 extra={
                     "error_type": type(e).__name__,
                     "user_id": user_id
                 }
             )
-            raise AuthenticationError(
-                message="Failed to create session",
-                error_code="SESSION_CREATION_ERROR"
+            raise AuthenticationError("Failed to initialize session manager")
+
+
+    async def validate_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Validate a session using SessionManager"""
+        try:
+            session_manager = SessionManager()
+            await session_manager.initialize()
+            
+            session_data = await session_manager._validate_session(session_id)
+            await session_manager.close()
+            
+            return session_data
+            
+        except Exception as e:
+            logger.error(
+                "Session validation failed in AuthService",
+                exc_info=True,
+                extra={
+                    "error_type": type(e).__name__,
+                    "session_id": session_id
+                }
+            )
+            return None
+
+    async def end_session(self, session_id: str) -> None:
+        """End a session using SessionManager"""
+        try:
+            session_manager = SessionManager()
+            await session_manager.initialize()
+            
+            await session_manager._end_session(session_id)
+            await session_manager.close()
+            
+        except Exception as e:
+            logger.error(
+                "Failed to end session in AuthService",
+                exc_info=True,
+                extra={
+                    "error_type": type(e).__name__,
+                    "session_id": session_id
+                }
             )
 
-    async def _validate_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Validate session and update last activity"""
-        async with self.session_lock:  # Changed from self._session_lock
-            session = self.active_sessions.get(session_id)  # Changed from self._active_sessions
-            if not session:
-                return None
-                
-            # Check session expiry
-            session_age = datetime.now(timezone.utc) - session["created_at"]
-            if session_age > timedelta(minutes=self.settings.SESSION_EXPIRE_MINUTES):
-                await self._end_session(session_id)
-                return None
             
-            # Update last activity
-            session["last_activity"] = datetime.now(timezone.utc)
-            return session
-
-    async def _end_session(self, session_id: str) -> None:
-        """End a session and cleanup"""
-        async with self.session_lock:  # Changed from self._session_lock
-            if session_id in self.active_sessions:  # Changed from self._active_sessions
-                session = self.active_sessions[session_id]
-                logger.info(
-                    "Session ended",
-                    extra={
-                        "session_id": session_id,
-                        "user_id": session["user_id"],
-                        "duration": (datetime.now(timezone.utc) - session["created_at"]).total_seconds()
-                    }
-                )
-                del self.active_sessions[session_id]
     
             
                
@@ -928,5 +1092,4 @@ async def setup_cleanup_task(auth_service: AuthService) -> None:
                 await asyncio.sleep(60)  # Wait a minute before retrying            
     
     
-        
-  
+ 

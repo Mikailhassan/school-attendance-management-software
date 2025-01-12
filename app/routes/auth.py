@@ -22,6 +22,8 @@ from app.core.errors import (
     get_error_message
 )
 from app.services import AuthService, RegistrationService, EmailService, SchoolService
+from app.core.config import settings 
+from app.services.auth_service import JWTSettings
 from app.schemas import (
     RegisterRequest,
     RegisterResponse,
@@ -132,6 +134,59 @@ async def register(
         
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    
+@router.post("/verify-session")
+async def verify_session(
+    request: Request,
+    response: Response,
+    auth_service: AuthService = Depends(get_auth_service),
+    language: str = 'en'
+) -> Dict[str, Any]:
+    """Verify session validity and refresh if needed"""
+    try:
+        # Get token from request
+        token = await auth_service.get_token_from_request(request)
+        if not token:
+            raise AuthenticationError("No token provided")
+
+        # Try to validate the token and session
+        payload = await auth_service.validate_token(token, language)
+        
+        # Get session info if available
+        session = await auth_service.validate_session(payload.get('session_id'))
+        
+        # The session data already contains ISO-formatted datetime strings
+        # so we don't need to call .isoformat() on them
+        return {
+            "valid": True,
+            "payload": payload,
+            "session": {
+                "id": session.get("session_id") if session else None,
+                "expires_at": session.get("expires_at") if session and session.get("expires_at") else None,
+                "last_activity": session.get("last_activity") if session and session.get("last_activity") else None
+            } if session else None
+        }
+        
+    except AuthenticationError as e:
+        logger.warning(f"Session verification failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "valid": False,
+                "message": get_error_message("session_validation_failed", language),
+                "code": "SESSION_INVALID"
+            }
+        )
+    except Exception as e:
+        logger.error(f"Session verification error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "valid": False,
+                "message": get_error_message("unexpected_error", language),
+                "code": "SERVER_ERROR"
+            }
+        )
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
@@ -246,51 +301,72 @@ async def refresh_token(
 ) -> TokenResponse:
     """Refresh access token using refresh token"""
     try:
-        # Check both cookies and Authorization header
-        refresh_token = request.cookies.get("refresh_token")
+        # Extract refresh token with improved error handling
+        refresh_token = None
+        auth_header = request.headers.get("Authorization")
         
-        # If not in cookies, check Authorization header
-        if not refresh_token:
-            auth_header = request.headers.get("Authorization")
-            if auth_header and auth_header.startswith("Bearer "):
-                refresh_token = auth_header.split(" ")[1]
+        if auth_header and auth_header.startswith("Bearer "):
+            refresh_token = auth_header.split(" ")[1]
+        else:
+            refresh_token = request.cookies.get("refresh_token")
         
         if not refresh_token:
             logger.warning("No refresh token found in cookies or headers")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=get_error_message("refresh_token_not_found", language),
-                headers={"X-Error-Code": "TOKEN_NOT_FOUND"}
+                detail={
+                    "message": get_error_message("refresh_token_not_found", language),
+                    "code": "TOKEN_NOT_FOUND"
+                }
             )
 
-        token_response = await auth_service.refresh_access_token(
+        # Get token response from auth service
+        token_data = await auth_service.refresh_access_token(
             refresh_token=refresh_token,
             response=response,
             request=request,
             language=language
         )
         
-        # Set new cookies with the refreshed tokens
+        if not isinstance(token_data, dict):
+            raise ValueError("Invalid token response format")
+            
+        # Create token response object
+        token_response = TokenResponse(
+            access_token=token_data["access_token"],
+            token_type="bearer"
+        )
+
+        # Set cookie settings based on environment
+        cookie_settings = {
+            "httponly": True,
+            "secure": settings.COOKIE_SECURE,  # True in production
+            "samesite": "lax" if settings.DEBUG else "strict",
+            "domain": settings.COOKIE_DOMAIN,
+            "path": "/"
+        }
+
+        # Set access token cookie with proper formatting
         response.set_cookie(
             key="access_token",
-            value=token_response.access_token,
-            httponly=True,
-            secure=False,  # True in production
-            samesite="lax",
-            domain="localhost",
-            path="/",
-            max_age=3600
+            value=f"Bearer {token_response.access_token}",
+            max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            **cookie_settings
         )
         
-        logger.debug("Token refresh successful")
+        logger.info("Token refresh successful")
         return token_response
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Token refresh error", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=get_error_message("token_refresh_failed", language),
-            headers={"X-Error-Code": "REFRESH_FAILED"}
+            detail={
+                "message": get_error_message("token_refresh_failed", language),
+                "code": "REFRESH_FAILED"
+            }
         )
 @router.post("/logout")
 async def logout(

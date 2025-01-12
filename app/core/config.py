@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, env="REFRESH_TOKEN_EXPIRE_DAYS")
     TOKEN_ISSUER: str = Field(default="school_attendance_system", env="TOKEN_ISSUER")
+    TOKEN_AUDIENCE: str = Field(default="school_attendance_system", env ="TOKEN_AUDIENCE")
     
     # CORS Settings
     ALLOWED_ORIGINS: List[str] = Field(
@@ -72,6 +73,9 @@ class Settings(BaseSettings):
     # Logging Settings
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
     LOG_FILE: Optional[str] = Field(default=None, env="LOG_FILE")
+    
+    REDIS_URL: str = "redis://localhost:6379"
+    REDIS_PASSWORD: str | None = None
 
     # Admin Settings
     SUPER_ADMIN_EMAIL: EmailStr = Field(..., env="SUPER_ADMIN_EMAIL")

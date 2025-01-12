@@ -10,6 +10,7 @@ from app.models.school import School
 from app.services.email_service import EmailService
 from sqlalchemy.future import select
 from app.middleware.request_id import RequestIDMiddleware
+from app.services.auth_service import SessionManager
 from app.middleware.auth import AuthMiddleware
 import logging
 logging.basicConfig(level=settings.LOG_LEVEL)
@@ -19,6 +20,10 @@ logger = logging.getLogger(__name__)
 # Initialize EmailService
 email_service = EmailService()
 
+session_manager = SessionManager(
+    redis_url=settings.REDIS_URL,
+    session_expire_minutes=60
+)
 
 def get_email_service():
     return email_service
@@ -32,13 +37,13 @@ def create_app() -> FastAPI:
         redoc_url="/api/redoc" if settings.DEBUG else None,
     )
     
- # CORS middleware must come FIRST
+ # CORS middleware
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.ALLOWED_ORIGINS,
-        allow_credentials=settings.credentials,
-        allow_methods=["*"],  
-        allow_headers=["*"],  # Allow all headers
+        allow_credentials=True,  
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  
+        allow_headers=["*"],
         expose_headers=["*"],
         max_age=600
     )
@@ -46,19 +51,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(
         AuthMiddleware,
-        exclude_paths={
-            '/api/v1/auth/login',
-            '/api/v1/auth/register',
-            '/api/v1/auth/refresh-token',
-            '/api/v1/auth/forgot-password',
-            '/api/v1/auth/reset-password',
-            '/api/v1/auth/health',
-            '/api/v1/auth/validate-token',  # Make sure this is excluded
-            '/api/health',
-            '/api/docs',
-            '/api/redoc',
-            '/openapi.json'
-        }
+     
     )
 
     # Include routers
@@ -72,6 +65,7 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def startup_event():
         await init_db()
+        await session_manager.initialize()
         async for db in get_db():
             await create_system_school(db)
             await create_super_admin(db)
@@ -79,6 +73,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def shutdown_event():
+        await session_manager.close()
         await close_db()
         logger.info("Application shutdown completed")
 

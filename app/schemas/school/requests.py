@@ -67,6 +67,17 @@ class SchoolFilterParams(BaseModel):
     class Config:
         use_enum_values = True
 
+
+class SchoolAdmin(BaseModel):
+    email: EmailStr
+    phone: str = Field(examples=["+254722000000"])
+    password: str = Field(min_length=8, max_length=100)
+    
+    @model_validator(mode='after')
+    def validate_admin_phone(self) -> 'SchoolAdmin':
+        validate_phone(self.phone)
+        return self
+
 class SchoolCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=255)
     email: EmailStr
@@ -74,19 +85,34 @@ class SchoolCreateRequest(BaseModel):
     address: str = Field(min_length=5, max_length=255)
     school_type: SchoolType
     website: Optional[AnyUrl] = None
+    registration_number: Optional[str] = None
+    status: Optional[SchoolStatus] = None
     county: Optional[str] = None
     class_system: str = Field(min_length=2, max_length=50)
     class_range: ClassRange
     postal_code: Optional[str] = None
     extra_info: Optional[Dict[str, Any]] = None
     school_admin: SchoolAdmin
-
+    
     def to_db_dict(self) -> dict:
         """Convert model to database-friendly dictionary"""
-        data = self.model_dump()
+        data = self.model_dump(exclude={'school_admin'})
         if data.get('website'):
             data['website'] = str(data['website'])
+        # Add generated fields
+        data['registration_number'] = f"SCH-{datetime.now().strftime('%Y%m')}-{id(self):x}"[-12:]
+        data['status'] = 'pending'
+        data['is_active'] = True
+        data['created_at'] = datetime.now()
         return data
+    
+    def to_admin_dict(self) -> dict:
+        """Convert admin data to database-friendly dictionary"""
+        admin_data = self.school_admin.model_dump()
+        admin_data['status'] = 'active'
+        admin_data['is_verified'] = False
+        admin_data['created_at'] = datetime.now()
+        return admin_data
 
     @model_validator(mode='after')
     def validate_phone_number(self) -> 'SchoolCreateRequest':
@@ -100,7 +126,6 @@ class SchoolCreateRequest(BaseModel):
                 "email": "abdullahiwardere@gmail.com",
                 "phone": "+254711997404",
                 "address": "123 Saka Road, Northern County",
-                "registration_number": "SGSS123",
                 "school_type": "secondary",
                 "website": "http://sakagirlssecondaryschool.com",
                 "county": "Northern County",
