@@ -18,4 +18,10 @@ class Class(TenantModel):
     )
 
     def __repr__(self):
-        return f"<Class(name={self.name}, school_id={self.school_id})>"
+        # Access __dict__ directly to avoid loading attributes
+        try:
+            name = self.__dict__.get('name', '<detached>')
+            school_id = self.__dict__.get('school_id', '<detached>')
+            return f"<Class(name={name}, school_id={school_id})>"
+        except:
+            return "<Class(detached)>"

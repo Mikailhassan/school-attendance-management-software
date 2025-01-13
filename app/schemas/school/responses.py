@@ -1,55 +1,34 @@
-# app/schemas/school/responses.py
-from pydantic import BaseModel, EmailStr, HttpUrl
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, EmailStr, AnyUrl
+from typing import Optional, Dict, Any, List
 from datetime import datetime
-from .requests import SchoolType
+from enum import Enum
 
-class StreamResponse(BaseModel):
+# Reusing enums from the request models
+class SchoolType(str, Enum):
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    MIXED = "mixed"
+    TECHNICAL = "technical"
+    VOCATIONAL = "vocational"
+
+class SchoolStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    SUSPENDED = "suspended"
+    PENDING = "pending"
+
+class ClassRangeResponse(BaseModel):
+    start: str
+    end: str
+
+class SchoolAdminResponse(BaseModel):
     id: int
-    name: str
-    class_id: int
-    capacity: Optional[int] = None
-    teacher_id: Optional[int] = None
-    description: Optional[str] = None
+    email: EmailStr
+    phone: str
+    status: str
+    is_verified: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-class ClassResponse(BaseModel):
-    id: int
-    name: str
-    level: int
-    session_id: int
-    description: Optional[str] = None
-    capacity: Optional[int] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    streams: List[StreamResponse] = []
-
-    class Config:
-        from_attributes = True
-
-class SessionResponse(BaseModel):
-    id: int
-    name: str
-    school_id: int
-    start_date: datetime
-    end_date: datetime
-    is_current: bool
-    description: Optional[str] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    classes: List[ClassResponse] = []
-
-    class Config:
-        from_attributes = True
-
-from pydantic import BaseModel, EmailStr, HttpUrl
-from typing import Optional, Dict, Any
-from datetime import datetime
-from .requests import SchoolType, ClassRange
 
 class SchoolResponse(BaseModel):
     id: int
@@ -57,47 +36,83 @@ class SchoolResponse(BaseModel):
     email: EmailStr
     phone: str
     address: str
-    registration_number: str
     school_type: SchoolType
-    website: Optional[HttpUrl] = None
+    website: Optional[AnyUrl] = None
+    registration_number: str
+    status: SchoolStatus
     county: Optional[str] = None
     class_system: str
-    class_range: ClassRange
+    class_range: ClassRangeResponse
     postal_code: Optional[str] = None
-    is_active: bool
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
     extra_info: Optional[Dict[str, Any]] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    admin: SchoolAdminResponse
 
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "id": 1,
-                "name": "Saka Girls Secondary School",
-                "email": "abdullahiwardere@yahoo.com",
-                "phone": "+254711997404",
-                "address": "123 Saka Road, Northern County",
-                "registration_number": "SCH-2024-008",
-                "school_type": "secondary",
-                "website": "http://sakagirlssecondaryschool.com",
-                "county": "Northern County",
-                "class_system": "8-4-4",
-                "class_range": {
-                    "start": "Form 1",
-                    "end": "Form 4"
-                },
-                "postal_code": "00100",
-                "is_active": True,
-                "created_at": "2024-03-19T12:00:00Z",
-                "updated_at": "2024-03-19T12:00:00Z",
-                "extra_info": {
-                    "motto": "Education for a brighter future",
-                    "established": "2005"
-                }
-            }
-        }
-    }
+class SchoolListResponse(BaseModel):
+    total: int
+    page: int
+    size: int
+    items: List[SchoolResponse]
 
+class SessionResponse(BaseModel):
+    id: int
+    name: str
+    start_date: datetime
+    end_date: datetime
+    is_current: bool
+    description: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+class SessionListResponse(BaseModel):
+    total: int
+    page: int
+    size: int
+    items: List[SessionResponse]
+
+class ClassResponse(BaseModel):
+    id: int
+    name: str
+   
+
+class ClassListResponse(BaseModel):
+    total: int
+    page: int
+    size: int
+    items: List[ClassResponse]
+
+class StreamResponse(BaseModel):
+    id: int
+    name: str
+    class_id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+class StreamListResponse(BaseModel):
+    total: int
+    page: int
+    size: int
+    items: List[StreamResponse]
+
+# Generic response models for common operations
+class MessageResponse(BaseModel):
+    message: str
+    
+class ErrorResponse(BaseModel):
+    error: str
+    detail: Optional[str] = None
+
+class ValidationErrorResponse(BaseModel):
+    error: str
+    detail: Dict[str, List[str]]
+
+# Response model for bulk operations
+class BulkOperationResponse(BaseModel):
+    success: int
+    failed: int
+    errors: Optional[List[Dict[str, Any]]] = None
 class SchoolDetailResponse(SchoolResponse):
     current_session: Optional[SessionResponse] = None
     classes: List[ClassResponse] = []
@@ -107,3 +122,14 @@ class SchoolDetailResponse(SchoolResponse):
 
     class Config:
         from_attributes = True
+        
+        
+class ClassStatisticsResponse(BaseModel):
+    class_name: str
+    total_streams: int
+    total_students: int
+    class_id: int
+    school_id: int
+
+    class Config:
+        from_attributes = True                

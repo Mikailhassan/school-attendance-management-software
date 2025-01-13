@@ -5,7 +5,7 @@ from sqlalchemy import select
 from typing import Tuple, Set, Callable, Awaitable, Optional
 import os
 from dotenv import load_dotenv
-
+from app.services.class_service import ClassService
 from app.models.user import User 
 from app.models.school import School
 from app.core.security import verify_token
@@ -29,6 +29,8 @@ async_engine = create_async_engine(
 
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+
 
 # Role hierarchies and permissions
 ROLE_HIERARCHY = {
@@ -69,6 +71,10 @@ async def get_email_service() -> EmailService:
 async def get_school_service(db: AsyncSession = Depends(get_db)) -> SchoolService:
     """Provide SchoolService instance"""
     return SchoolService(db)
+
+async def get_class_service(db: AsyncSession = Depends(get_db)) -> ClassService:
+    """Provide ClassService instance"""
+    return ClassService(db)
 
 # User authentication and authorization
 async def get_current_user(

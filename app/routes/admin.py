@@ -6,8 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import date,datetime
 from app.schemas.enums import UserRole
 from app.services.email_service import EmailService
+from sqlalchemy.sql import and_
 import re
+from app.services.class_service import ClassService
 from app.core.exceptions import DuplicateSchoolException
+from app.schemas.school.requests import BulkClassCreateRequest
+from app.core.dependencies import get_class_service
 from app.models import (
     School, Class, Stream, Session, User, Student, Parent,
     StudentAttendance
@@ -29,7 +33,8 @@ from app.schemas.school.responses import (
     SessionResponse,
     ClassResponse,
     StreamResponse,
-    SchoolResponse    
+    SchoolResponse,
+    ClassStatisticsResponse    
 )
 from app.schemas.user import UserResponse
 
@@ -55,7 +60,7 @@ router = APIRouter(tags=["Admin"])
 
 router = APIRouter(tags=["Users"])
 
-router = APIRouter(tags=["Users"])
+
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
@@ -242,6 +247,27 @@ async def get_school_profile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving school profile: {str(e)}"
         )
+        
+async def get_school_or_404(db: Session, registration_number: str):
+    """Utility function to get school or raise 404"""
+    try:
+        school = await db.scalar(
+            select(School)
+            .where(School.registration_number == registration_number.strip('{}'))
+        )
+        if not school:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"School with registration number {registration_number} not found"
+            )
+        return school
+    except SQLAlchemyError as e:
+        logger.error(f"Database error while fetching school: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error while fetching school"
+        )
+        
 
 # Optional: Add an endpoint for updating the school profile
 @router.patch("/schools/profile", response_model=SchoolResponse)
@@ -296,98 +322,149 @@ async def update_school_profile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating school profile: {str(e)}"
         )
-
-@router.get("/schools/{registration_number}/classes")
-async def list_classes(
+@router.post("/{registration_number}/classes", response_model=ClassResponse)
+async def create_class(
     registration_number: str,
-    db: Session = Depends(get_db),
-    current_user: UserInDB = Depends(get_current_school_admin)
-):
-    """List all classes in a school"""
-    clean_registration_number = registration_number.strip('{}')
+    class_data: ClassCreateRequest,
+    class_service: ClassService = Depends(get_class_service)
+) -> ClassResponse:
+    """
+    Create a new class for a school
     
-    # Execute the query first, then call unique() on the Result object
-    result = await db.execute(
-        select(School)
-        .where(School.registration_number == clean_registration_number)
-        .options(
-            joinedload(School.classes).joinedload(Class.streams)
-        )
+    Args:
+        registration_number: School registration number
+        class_data: Class creation data
+        class_service: Injected class service
+        
+    Returns:
+        ClassResponse: Created class data
+        
+    Raises:
+        HTTPException: If school not found or class name already exists
+    """
+    db_class = await class_service.create_class(registration_number, class_data)
+    
+    return ClassResponse(
+        id=db_class.id,
+        name=db_class.name,
+        
     )
-    school = result.unique().scalar_one_or_none() 
-    
-    if not school:
-        raise HTTPException(status_code=404, detail="School not found")
-    
-    return school.classes
 
-@router.post("/schools/{registration_number}/classes/{class_id}/streams")
-async def create_stream(
+@router.get(
+    "/schools/{registration_number}/classes/{class_id}",
+    response_model=ClassResponse
+)
+async def get_class_details(
     registration_number: str,
     class_id: int,
-    stream_data: StreamCreateRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: UserInDB = Depends(get_current_school_admin)
 ):
-    """Create a new stream within a class"""
-    clean_registration_number = registration_number.strip('{}')
-    
-    # Use a single query to get both school and class
-    result = await db.execute(
-        select(School, Class)
-        .join(Class, School.id == Class.school_id)
-        .where(
-            School.registration_number == clean_registration_number,
-            Class.id == class_id
-        )
-    )
-    school_and_class = result.first()
-    
-    if not school_and_class:
-        raise HTTPException(status_code=404, detail="School or class not found")
-    
-    school, class_obj = school_and_class
-    
-    new_stream = Stream(
-        name=stream_data.name,
-        class_id=class_id,
-        school_id=school.id
-    )
-    db.add(new_stream)
-    await db.commit()
-    await db.refresh(new_stream)
-    return new_stream
+    """Get detailed information about a specific class"""
+    class_service = ClassService(db)
+    school = await class_service.get_school_by_registration(registration_number)
+    return await class_service.get_class(class_id, school.id)
 
-@router.get("/schools/{registration_number}/classes/{class_id}/streams")
+@router.get(
+    "/schools/{registration_number}/classes/{class_id}",
+    response_model=ClassResponse
+)
+async def get_class_details(
+    registration_number: str,
+    class_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_school_admin)
+):
+    """Get detailed information about a specific class"""
+    class_service = ClassService(db)
+    school = await class_service.get_school_by_registration(registration_number)
+    return await class_service.get_class(class_id, school.id)
+
+@router.patch(
+    "/schools/{registration_number}/classes/{class_id}",
+    response_model=ClassResponse
+)
+async def update_class(
+    registration_number: str,
+    class_id: int,
+    update_data: ClassUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_school_admin)
+):
+    """Update a specific class"""
+    class_service = ClassService(db)
+    return await class_service.update_class(registration_number, class_id, update_data)
+
+@router.get(
+    "/schools/{registration_number}/classes/{class_id}/statistics",
+    response_model=ClassStatisticsResponse
+)
+async def get_class_statistics(
+    registration_number: str,
+    class_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_school_admin)
+):
+    """Get statistics for a specific class"""
+    class_service = ClassService(db)
+    return await class_service.get_class_statistics(registration_number, class_id)
+
+@router.post(
+    "/schools/{registration_number}/classes/{class_name}/streams",
+    response_model=StreamResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        404: {"description": "School or class not found"},
+        409: {"description": "Stream already exists"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def create_stream(
+    registration_number: str,
+    class_name: str,
+    stream_data: StreamCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_school_admin)
+):
+    """
+    Create a new stream within a class
+    
+    Parameters:
+    - registration_number: School registration number
+    - class_name: Name of the class (e.g., 'Form 18')
+    - stream_data: Stream details including name (e.g., '18A')
+    """
+    class_service = ClassService(db)
+    return await class_service.create_stream(registration_number, class_name, stream_data)
+@router.get(
+    "/schools/{registration_number}/classes/{class_id}/streams",
+    response_model=List[StreamResponse]
+)
 async def list_streams(
     registration_number: str,
     class_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: UserInDB = Depends(get_current_school_admin)
 ):
     """List all streams in a class"""
-    clean_registration_number = registration_number.strip('{}')
-    
-    # Optimize query to check both school and streams in one go
-    streams = await db.execute(
-        select(Stream)
-        .join(School, Stream.school_id == School.id)
-        .where(
-            School.registration_number == clean_registration_number,
-            Stream.class_id == class_id
-        )
-    )
-    
-    result = streams.scalars().all()
-    if not result:
-        # Verify if the school exists before returning empty results
-        school = await db.execute(
-            select(School).where(School.registration_number == clean_registration_number)
-        )
-        if not school.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="School not found")
-    
-    return result
+    class_service = ClassService(db)
+    return await class_service.list_streams(registration_number, class_id)
+
+@router.patch(
+    "/schools/{registration_number}/classes/{class_id}/streams/{stream_id}",
+    response_model=StreamResponse
+)
+async def update_stream(
+    registration_number: str,
+    class_id: int,
+    stream_id: int,
+    update_data: StreamUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_school_admin)
+):
+    """Update a specific stream"""
+    class_service = ClassService(db)
+    return await class_service.update_stream(registration_number, class_id, stream_id, update_data)
 
 # Student Management Endpoints
 @router.post("/schools/{registration_number}/students")

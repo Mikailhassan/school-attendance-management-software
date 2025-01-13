@@ -206,6 +206,9 @@ class ClassCreateRequest(BaseModel):
             }
         }
     }
+    
+class BulkClassCreateRequest(BaseModel):
+    classes: List[ClassCreateRequest]    
 
 class ClassUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=50)

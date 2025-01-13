@@ -77,3 +77,24 @@ class InvalidStateException(Exception):
     def __init__(self, message: str = "Invalid application state"):
         self.message = message
         super().__init__(self.message)
+        
+ 
+class ResourceNotFoundException(Exception):
+    """Raised when a requested resource is not found"""
+    pass
+
+class DuplicateResourceException(Exception):
+    """Raised when attempting to create a duplicate resource"""
+    pass
+
+class ValidationError(Exception):
+    """Raised when validation fails"""
+    pass
+
+class BusinessLogicError(Exception):
+    """Raised when a business rule is violated"""
+    pass
+
+class DatabaseOperationError(Exception):
+    """Raised when a database operation fails"""
+    pass        
