@@ -14,6 +14,7 @@ from app.services.auth_service import AuthService
 from app.services.registration_service import RegistrationService
 from app.services.email_service import EmailService
 from app.services.school_service import SchoolService
+from app.services.sms_service import SMSService
 
 # Load environment variables
 load_dotenv()
@@ -63,6 +64,10 @@ async def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
 async def get_registration_service(db: AsyncSession = Depends(get_db)) -> RegistrationService:
     """Provide RegistrationService instance"""
     return RegistrationService(db)
+
+async def get_sms_service() -> SMSService:
+    """Provide SMSService instance"""
+    return SMSService()
 
 async def get_email_service() -> EmailService:
     """Provide EmailService instance"""

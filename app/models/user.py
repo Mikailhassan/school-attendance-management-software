@@ -22,7 +22,7 @@ class User(TenantModel):
 
     @declared_attr
     def password_hash(cls):
-        return Column(String, nullable=False)
+        return Column(String, nullable=True)
 
     @declared_attr
     def is_active(cls):

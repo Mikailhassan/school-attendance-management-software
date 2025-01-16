@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, AnyUrl, model_validator
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime,date,time
 from enum import Enum
 from .base import SchoolBase
 import re
@@ -163,12 +163,14 @@ class SchoolUpdateRequest(BaseModel):
         if self.phone is not None:
             validate_phone(self.phone)
         return self
-
+    
+    
 class SessionCreateRequest(BaseModel):
-    name: str = Field(min_length=2, max_length=50)
-    start_date: datetime
-    end_date: datetime
-    is_current: bool = False
+    name: str
+    start_time: time
+    end_time: time
+    start_date: date
+    end_date: date
     description: Optional[str] = None
 
     @model_validator(mode='after')

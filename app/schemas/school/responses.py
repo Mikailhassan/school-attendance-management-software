@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, AnyUrl
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, date, time
 from enum import Enum
 
 # Reusing enums from the request models
@@ -55,16 +55,22 @@ class SchoolListResponse(BaseModel):
     page: int
     size: int
     items: List[SchoolResponse]
-
+    
+    
+    
 class SessionResponse(BaseModel):
     id: int
     name: str
-    start_date: datetime
-    end_date: datetime
-    is_current: bool
-    description: Optional[str] = None
-    created_at: datetime
-    updated_at: Optional[datetime] = None
+    start_time: time
+    end_time: time
+    start_date: date
+    end_date: date
+    description: Optional[str]
+    is_active: bool
+    school_id: int
+
+    class Config:
+        from_attributes = True
 
 class SessionListResponse(BaseModel):
     total: int

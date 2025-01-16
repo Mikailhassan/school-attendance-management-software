@@ -920,6 +920,7 @@ async def delete_stream(
 #         "classes": [{"id": c.id, "name": c.name} for c in classes],
 #         "streams": [{"id": s.id, "name": s.name} for s in streams]
 #     }    
+
     
 
 @router.post("/schools/{registration_number}/sessions", response_model=SessionResponse)
@@ -948,28 +949,30 @@ async def create_session(
             detail="End date must be after start date"
         )
     
-    # Check for date overlaps with existing sessions
+    # Validate times
+    if session_data.end_time <= session_data.start_time:
+        raise HTTPException(
+            status_code=400,
+            detail="End time must be after start time"
+        )
+    
+    # Check for time overlaps with existing sessions
     existing_session = await db.execute(
         select(Session).where(
             and_(
                 Session.school_id == school.id,
                 Session.start_date <= session_data.end_date,
-                Session.end_date >= session_data.start_date
+                Session.end_date >= session_data.start_date,
+                Session.start_time < session_data.end_time,
+                Session.end_time > session_data.start_time,
+                Session.is_active == True
             )
         )
     )
     if existing_session.scalar_one_or_none():
         raise HTTPException(
             status_code=400,
-            detail="Session dates overlap with an existing session"
-        )
-    
-    # If this session is marked as current, unmark other current sessions
-    if session_data.is_current:
-        await db.execute(
-            update(Session)
-            .where(Session.school_id == school.id)
-            .values(is_current=False)
+            detail="Session times overlap with an existing active session during these dates"
         )
     
     # Create new session
@@ -977,19 +980,22 @@ async def create_session(
         name=session_data.name,
         start_date=session_data.start_date,
         end_date=session_data.end_date,
-        is_current=session_data.is_current,
+        start_time=session_data.start_time,
+        end_time=session_data.end_time,
         description=session_data.description,
+        is_active=True,
         school_id=school.id
     )
+    
     db.add(new_session)
     await db.commit()
     await db.refresh(new_session)
     
     return new_session
-
 @router.get("/schools/{registration_number}/sessions", response_model=List[SessionResponse])
 async def list_sessions(
     registration_number: str,
+    show_inactive: bool = False,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(get_current_school_admin)
 ):
@@ -1004,20 +1010,23 @@ async def list_sessions(
     if not school:
         raise HTTPException(status_code=404, detail="School not found")
     
-    sessions = await db.execute(
-        select(Session)
-        .where(Session.school_id == school.id)
-        .order_by(Session.start_date.desc())
-    )
+    query = select(Session).where(Session.school_id == school.id)
+    
+    if not show_inactive:
+        query = query.where(Session.is_active == True)
+    
+    query = query.order_by(Session.start_date.desc(), Session.start_time.asc())
+    
+    sessions = await db.execute(query)
     return sessions.scalars().all()
 
-@router.get("/schools/{registration_number}/sessions/current", response_model=SessionResponse)
-async def get_current_session(
+@router.get("/schools/{registration_number}/sessions/active", response_model=List[SessionResponse])
+async def get_active_sessions(
     registration_number: str,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(get_current_school_admin)
 ):
-    """Get the current active session for a school"""
+    """Get all active sessions for a school"""
     clean_registration_number = registration_number.strip('{}')
     
     school = await db.execute(
@@ -1028,44 +1037,88 @@ async def get_current_session(
     if not school:
         raise HTTPException(status_code=404, detail="School not found")
     
-    current_session = await db.execute(
+    sessions = await db.execute(
         select(Session)
         .where(
             and_(
                 Session.school_id == school.id,
-                Session.is_current == True
+                Session.is_active == True
             )
         )
+        .order_by(Session.start_time.asc())
     )
-    current_session = current_session.scalar_one_or_none()
-    
-    if not current_session:
-        raise HTTPException(
-            status_code=404,
-            detail="No current session found"
-        )
-    
-    return current_session
+    return sessions.scalars().all()
 
 @router.patch("/schools/{registration_number}/sessions/{session_id}", response_model=SessionResponse)
 async def update_session(
     registration_number: str,
-    session_id: str,
+    session_id: int,
     session_data: SessionUpdateRequest,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(get_current_school_admin)
 ):
     """Update an existing session"""
     clean_registration_number = registration_number.strip('{}')
-    clean_session_id = session_id.strip('{}')
     
-    try:
-        session_id_int = int(clean_session_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid session ID format"
+    # Verify school and session exist
+    school = await db.execute(
+        select(School).where(School.registration_number == clean_registration_number)
+    )
+    school = school.scalar_one_or_none()
+    
+    if not school:
+        raise HTTPException(status_code=404, detail="School not found")
+        
+    session = await db.execute(
+        select(Session).where(
+            and_(
+                Session.id == session_id,
+                Session.school_id == school.id
+            )
         )
+    )
+    session = session.scalar_one_or_none()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Validate time updates if provided
+    if session_data.start_time and session_data.end_time:
+        if session_data.end_time <= session_data.start_time:
+            raise HTTPException(
+                status_code=400,
+                detail="End time must be after start time"
+            )
+            
+        # Check for overlaps with other sessions
+        overlapping = await db.execute(
+            select(Session).where(
+                and_(
+                    Session.school_id == school.id,
+                    Session.id != session_id,
+                    Session.start_date <= (session_data.end_date or session.end_date),
+                    Session.end_date >= (session_data.start_date or session.start_date),
+                    Session.start_time < session_data.end_time,
+                    Session.end_time > session_data.start_time,
+                    Session.is_active == True
+                )
+            )
+        )
+        if overlapping.scalar_one_or_none():
+            raise HTTPException(
+                status_code=400,
+                detail="Updated session times would overlap with an existing active session"
+            )
+    
+    # Update session
+    update_data = session_data.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(session, key, value)
+    
+    await db.commit()
+    await db.refresh(session)
+    
+    return session
     
     # Verify school exists
     school = await db.execute(

@@ -15,8 +15,7 @@ from app.services.class_service import ClassService
 from app.core.exceptions import DuplicateSchoolException, SchoolNotFoundException, ResourceNotFoundException
 from app.schemas.school.responses import ClassDetailsResponse 
 from app.schemas.school.requests import BulkClassCreateRequest
-from app.core.dependencies import get_class_service
-from app.core.dependencies import get_school_service
+from app.schemas.parents import ParentResponse
 from app.models import (
     School, Class, Stream, Session, User, Student, Parent,
     StudentAttendance
@@ -43,7 +42,6 @@ from app.core.dependencies import (
 from app.schemas.auth.requests import UserInDB
 from app.services.school_service import SchoolService
 from app.utils.email_utils import send_email
-
 
 email_service = EmailService()
 async def get_class_service(db: AsyncSession = Depends(get_db)) -> ClassService:
@@ -482,21 +480,28 @@ async def get_students(
         
         students = students.unique().scalars().all()
 
-        # Format response
-        student_responses = [
-            StudentResponse(
-                id=student.id,
-                name=student.name,
-                admission_number=student.admission_number,
-                class_id=student.class_id,
-                stream_id=student.stream_id,
-                school_id=student.school_id,
-                date_of_birth=student.date_of_birth,
-                parent_name=student.parent.name if student.parent else None,
-                parent_phone=student.parent.phone if student.parent else None,
-                parent_email=student.parent.email if student.parent else None,
-            )
-            for student in students
+        students = [
+            {
+                "id": student.id,
+                "name": student.name,
+                "admission_number": student.admission_number,
+                "class_id": student.class_id,
+                "stream_id": student.stream_id,
+                "school_id": student.school_id,
+                "parent_id": student.parent_id,
+                "date_of_birth": student.date_of_birth,
+                "gender": getattr(student, 'gender', None),
+                "address": getattr(student, 'address', None),
+                "photo": getattr(student, 'photo', None),
+                "fingerprint": getattr(student, 'fingerprint', None),
+                "date_of_joining": getattr(student, 'date_of_joining', None),
+                "parent_name": parent.name if parent else None,
+                "parent_phone": parent.phone if parent else None,
+                "parent_email": parent.email if parent else None,
+                "class_name": class_.name if class_ else None,
+                "stream_name": stream.name if stream else None
+            }
+            for student, parent, class_, stream in rows
         ]
 
         return PaginatedStudentResponse(
@@ -676,3 +681,93 @@ async def get_student_statistics(
         "age_distribution": age_distribution,
         "average_students_per_class": total_students / len(class_distribution) if class_distribution else 0
     }
+    
+    
+    
+@router.get("/schools/{registration_number}/parents")
+async def get_parents(
+    registration_number: str,
+    search: Optional[str] = Query(None, description="Search by parent name or email"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_school_admin)
+):
+    """Get paginated list of parents with their associated students"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        
+        # Get school
+        result = await db.execute(
+            select(School).where(School.registration_number == clean_registration_number)
+        )
+        school = result.scalar_one_or_none()
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+            
+        if school.id != current_user.school_id:
+            raise HTTPException(status_code=403, detail="Access denied to this school's data")
+
+        # Build base query
+        stmt = (
+            select(Parent, func.array_agg(Student.name).label('student_names'))
+            .outerjoin(Student, Parent.id == Student.parent_id)
+            .where(Parent.school_id == school.id)
+            .group_by(Parent.id)
+        )
+
+        # Apply search filter if provided
+        if search:
+            search_term = f"%{search}%"
+            stmt = stmt.where(
+                or_(
+                    Parent.name.ilike(search_term),
+                    Parent.email.ilike(search_term),
+                    Parent.phone.ilike(search_term)
+                )
+            )
+
+        # Get total count
+        count_result = await db.execute(
+            select(func.count()).select_from(stmt.subquery())
+        )
+        total_count = count_result.scalar()
+
+        # Apply pagination
+        stmt = (
+            stmt.order_by(Parent.name)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        # Execute query
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        # Transform results
+        parents = [
+            ParentResponse(
+                id=parent.id,
+                name=parent.name,
+                email=parent.email,
+                phone=parent.phone,
+                school_id=parent.school_id,
+                user_id=parent.user_id,
+                students=[name for name in student_names if name is not None]
+            )
+            for parent, student_names in rows
+        ]
+
+        return {
+            "items": parents,
+            "total": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": math.ceil(total_count / page_size)
+        }
+
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in get_parents: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    

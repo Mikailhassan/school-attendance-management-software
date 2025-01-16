@@ -1,54 +1,24 @@
-from sqlalchemy import Column, Integer, String, Date, ForeignKey
-from sqlalchemy.orm import relationship, declared_attr
+from sqlalchemy import Column, Integer, String, Date, Time, ForeignKey, Boolean
+from sqlalchemy.orm import relationship
 from .base import Base
 
 class Session(Base):
     __tablename__ = 'sessions'
-
-    @declared_attr
-    def id(cls):
-        return Column(Integer, primary_key=True, index=True)
-
-    @declared_attr
-    def name(cls):
-        return Column(String, index=True)
-
-    @declared_attr
-    def start_date(cls):
-        return Column(Date)
-
-    @declared_attr
-    def end_date(cls):
-        return Column(Date)
-
-    @declared_attr
-    def status(cls):
-        return Column(String, default='Active')
-
-    @declared_attr
-    def school_id(cls):
-        return Column(Integer, ForeignKey('schools.id'))
-
-    @declared_attr
-    def stream_id(cls):
-        return Column(Integer, ForeignKey('streams.id'))
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, index=True)  # e.g. "Morning Session", "Afternoon Session"
+    start_time = Column(Time, nullable=False)  
+    end_time = Column(Time, nullable=False)    
+    start_date = Column(Date, nullable=False)  
+    end_date = Column(Date, nullable=False)    
+    is_active = Column(Boolean, default=True)  
+    description = Column(String, nullable=True)
+    school_id = Column(Integer, ForeignKey('schools.id'), nullable=False)
 
     # Relationships
-    @declared_attr
-    def school(cls):
-        return relationship("School", back_populates="sessions")
-
-    @declared_attr
-    def stream(cls):
-        return relationship("Stream", back_populates="sessions")
-
-    @declared_attr
-    def student_attendances(cls):
-        return relationship("StudentAttendance", back_populates="session")
-
-    @declared_attr
-    def teacher_attendances(cls):
-        return relationship("TeacherAttendance", back_populates="session")
+    school = relationship("School", back_populates="sessions")
+    student_attendances = relationship("StudentAttendance", back_populates="session")
+    teacher_attendances = relationship("TeacherAttendance", back_populates="session")
 
     def __repr__(self):
-        return f"<Session(name={self.name}, start_date={self.start_date}, end_date={self.end_date}, status={self.status})>"
+        return f"<Session(name={self.name}, start_time={self.start_time}, end_time={self.end_time})>"

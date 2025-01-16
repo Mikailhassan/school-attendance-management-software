@@ -1,9 +1,8 @@
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, List
 import json
 from datetime import datetime
 from pydantic import BaseModel, Field, validator
 import logging
-from fastapi import HTTPException
 import re
 import aiohttp
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -25,11 +24,6 @@ class InfobipConfig(BaseModel):
 
     class Config:
         env_prefix = "INFOBIP_"
-
-class SMS2FAApplication(BaseModel):
-    name: str
-    enabled: bool = True
-    configuration: Dict[str, Any]
 
 # Message and Response Models
 class SMSMessage(BaseModel):
@@ -53,8 +47,8 @@ class SMSResponse(BaseModel):
     sent_at: datetime = Field(default_factory=datetime.utcnow)
     error: Optional[str] = None
 
-# Infobip SMS Service
-class InfobipSMSService:
+# SMS Service Class
+class SMSService:
     def __init__(self, config: InfobipConfig):
         self.config = config
         self.headers = {
@@ -107,100 +101,47 @@ class InfobipSMSService:
                 error=str(e)
             )
 
-# Utility Functions for Notifications
-async def send_student_attendance_notification(
-    service: InfobipSMSService,
-    parent_phone: str,
-    student_name: str,
-    check_type: str,
-    timestamp: datetime = None
-) -> SMSResponse:
-    """Send attendance notification to parents."""
-    action = "checked in to" if check_type == "check_in" else "checked out of"
-    timestamp_str = timestamp.strftime("%I:%M %p") if timestamp else datetime.now().strftime("%I:%M %p")
+    async def send_student_attendance_notification(
+        self,
+        parent_phone: str,
+        student_name: str,
+        check_type: str,
+        timestamp: datetime = None
+    ) -> SMSResponse:
+        """Send attendance notification to parents."""
+        action = "checked in to" if check_type == "check_in" else "checked out of"
+        timestamp_str = timestamp.strftime("%I:%M %p") if timestamp else datetime.now().strftime("%I:%M %p")
 
-    message = SMSMessage(
-        to=parent_phone,
-        text=f"Notification: {student_name} has {action} school at {timestamp_str}."
-    )
-    return await service.send_sms(message)
-
-async def send_teacher_reminder(
-    service: InfobipSMSService,
-    teacher_phone: str,
-    teacher_name: str,
-    missing_action: str
-) -> SMSResponse:
-    """Send reminder to teachers."""
-    message = SMSMessage(
-        to=teacher_phone,
-        text=f"Reminder: Dear {teacher_name}, you have not {missing_action} today. Please mark your attendance."
-    )
-    return await service.send_sms(message)
-
-async def send_school_announcement(
-    service: InfobipSMSService,
-    recipients: list,
-    announcement: str
-) -> Dict[str, SMSResponse]:
-    """Send school-wide announcements."""
-    responses = {}
-    for recipient in recipients:
         message = SMSMessage(
-            to=recipient,
-            text=f"Announcement: {announcement}"
+            to=parent_phone,
+            text=f"Notification: {student_name} has {action} school at {timestamp_str}."
         )
-        responses[recipient] = await service.send_sms(message)
-    return responses
+        return await self.send_sms(message)
 
-# Example Integration with FastAPI
-"""
-from fastapi import FastAPI, Depends
-from functools import lru_cache
+    async def send_teacher_reminder(
+        self,
+        teacher_phone: str,
+        teacher_name: str,
+        missing_action: str
+    ) -> SMSResponse:
+        """Send reminder to teachers."""
+        message = SMSMessage(
+            to=teacher_phone,
+            text=f"Reminder: Dear {teacher_name}, you have not {missing_action} today. Please mark your attendance."
+        )
+        return await self.send_sms(message)
 
-app = FastAPI()
-
-@lru_cache()
-def get_infobip_config() -> InfobipConfig:
-    return InfobipConfig(
-        BASE_URL="e5dkp3.api.infobip.com",
-        API_KEY="YOUR_API_KEY"
-    )
-
-@lru_cache()
-def get_sms_service(config: InfobipConfig = Depends(get_infobip_config)) -> InfobipSMSService:
-    return InfobipSMSService(config)
-
-@app.post("/send-sms")
-async def send_sms(
-    message: SMSMessage,
-    sms_service: InfobipSMSService = Depends(get_sms_service)
-):
-    return await sms_service.send_sms(message)
-
-@app.post("/send-student-attendance-notification")
-async def send_student_notification(
-    parent_phone: str,
-    student_name: str,
-    check_type: str,
-    sms_service: InfobipSMSService = Depends(get_sms_service)
-):
-    return await send_student_attendance_notification(sms_service, parent_phone, student_name, check_type)
-
-@app.post("/send-teacher-reminder")
-async def send_teacher_reminder_api(
-    teacher_phone: str,
-    teacher_name: str,
-    missing_action: str,
-    sms_service: InfobipSMSService = Depends(get_sms_service)
-):
-    return await send_teacher_reminder(sms_service, teacher_phone, teacher_name, missing_action)
-
-@app.post("/send-school-announcement")
-async def send_announcement(
-    recipients: list,
-    announcement: str,
-    sms_service: InfobipSMSService = Depends(get_sms_service)
-):
-    return await send_school_announcement(sms_service, recipients, announcement)
-"""
+    async def send_school_announcement(
+        self,
+        recipients: List[str],
+        announcement: str
+    ) -> Dict[str, SMSResponse]:
+        """Send school-wide announcements."""
+        responses = {}
+        for recipient in recipients:
+            message = SMSMessage(
+                to=recipient,
+                text=f"Announcement: {announcement}"
+            )
+            responses[recipient] = await self.send_sms(message)
+        return responses
