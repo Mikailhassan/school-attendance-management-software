@@ -210,7 +210,7 @@ async def login(
         # Get client info for logging/tracking
         client_ip = request.client.host if request.client else "unknown"
         user_agent = request.headers.get("user-agent", "unknown")
-        request_id = str(uuid.uuid4())  # Fixed: Use uuid.uuid4() to generate UUID
+        request_id = str(uuid.uuid4())
         
         # Enhanced logging for security tracking
         logger.info(
@@ -232,11 +232,12 @@ async def login(
             language=language
         )
         
+        # Fixed: Use proper Pydantic model attribute access
         logger.info(
             "Login successful",
             extra={
                 "request_id": request_id,
-                "user_id": str(login_response.user.get("id")),
+                "user_id": str(login_response.user.id),  # Changed from .get("id") to .id
                 "ip": client_ip
             }
         )

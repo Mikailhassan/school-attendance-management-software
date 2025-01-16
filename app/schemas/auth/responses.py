@@ -19,11 +19,10 @@ class UserBaseResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# Response for a successful user login (includes a token for authentication)
 class LoginResponse(BaseModel):
     access_token: str
     refresh_token: str
-    user: dict
+    user: UserResponse
     
     class Config:
         from_attributes = True

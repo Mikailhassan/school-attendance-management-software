@@ -73,7 +73,12 @@ from .student.responses import (
     StudentCreateResponse,
     StudentDetailResponse,
     StudentUpdateResponse,
-    StudentListResponse
+    StudentListResponse,
+    StudentResponse,
+    StudentListResponse,
+    StudentDetailResponse,
+    StudentCreateResponse,
+    PaginatedStudentResponse
 )
 
 # Import school schemas

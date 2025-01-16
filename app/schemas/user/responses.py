@@ -5,10 +5,11 @@ from datetime import datetime
 from ..enums import UserRole
 
 class UserResponse(BaseModel):
-    id: int
-    email: EmailStr
-    name: str
+    id: str
+    email: str
     role: str
+    school_id: Optional[str]
+    school_registration: Optional[str]  
 
     class Config:
         from_attributes = True

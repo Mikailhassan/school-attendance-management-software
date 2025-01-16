@@ -18,8 +18,8 @@ class AttendanceSummary(BaseModel):
 
 class TeacherResponse(BaseModel):
     """Schema for teacher response"""
-    model_config = ConfigDict(from_attributes=True)  
-
+    model_config = ConfigDict(from_attributes=True)
+    
     id: int
     name: str
     gender: Gender

@@ -13,7 +13,9 @@ class TokenData(BaseModel):
     email: str
     role: UserRole
     school_id: Optional[str] = None
+    school_reg: Optional[str] = None
     user_id: Optional[int] = None
+    
 
 # Token Refresh Request, to send the refresh token to refresh the session
 class TokenRefreshRequest(BaseModel):

@@ -4,7 +4,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import HTTPException, BackgroundTasks
 from sqlalchemy import and_
 from app.models.teacher import Teacher
@@ -13,6 +13,8 @@ from app.core.security import generate_temporary_password, get_password_hash
 from app.core.logging import logging
 from app.utils.email_utils import send_email
 from app.schemas.enums import UserRole
+from app.schemas.teacher import TeacherRegistrationRequest
+
 
 logger = logging.getLogger(__name__)
 
@@ -45,91 +47,88 @@ class TeacherService:
             raise HTTPException(status_code=400, detail="Email already registered")
 
     async def register_teacher(
-        self,
-        registration_number: str,
-        teacher_data: dict,
-        background_tasks: BackgroundTasks
-    ) -> Teacher:
-        school = await self._get_school(registration_number)
-        await self._validate_unique_tsc(teacher_data["tsc_number"])
-        await self._validate_unique_email(teacher_data["email"])
+            self,
+            registration_number: str,
+            teacher_data: TeacherRegistrationRequest,  
+            background_tasks: BackgroundTasks
+        ) -> Dict[str, Any]:
+            school = await self._get_school(registration_number)
+            await self._validate_unique_tsc(teacher_data.tsc_number)
+            await self._validate_unique_email(teacher_data.email)
 
-        temp_password = generate_temporary_password()
-        
-        try:
-            # Create user
-            teacher_user = User(
-                name=teacher_data["name"],
-                email=teacher_data["email"],
-                phone=teacher_data["phone"],
-                date_of_birth=teacher_data["date_of_birth"],
-                password_hash=get_password_hash(temp_password),
-                role=UserRole.TEACHER,
-                school_id=school.id,
-                is_active=True
-            )
-            self.db.add(teacher_user)
-            await self.db.flush()
-
-            # Create teacher profile
-            new_teacher = Teacher(
-                name=teacher_data["name"],
-                gender=teacher_data["gender"],
-                email=teacher_data["email"],
-                phone=teacher_data["phone"],
-                date_of_joining=teacher_data["date_of_joining"],
-                date_of_birth=teacher_data["date_of_birth"],
-                tsc_number=teacher_data["tsc_number"],
-                address=teacher_data["address"],
-                user_id=teacher_user.id,
-                school_id=school.id
-            )
-            self.db.add(new_teacher)
-            await self.db.flush()
-
-            # Schedule welcome email
-            background_tasks.add_task(
-                send_email,
-                recipient_email=new_teacher.email,
-                subject="Welcome to School Management System - Teacher Account Created",
-                body=self._generate_welcome_email(
-                    name=new_teacher.name,
-                    email=teacher_data["email"],
-                    password=temp_password
+            temp_password = generate_temporary_password()
+            
+            try:
+                # Create user
+                teacher_user = User(
+                    name=teacher_data.name,
+                    email=teacher_data.email,
+                    phone=teacher_data.phone,
+                    date_of_birth=teacher_data.date_of_birth,
+                    password_hash=get_password_hash(temp_password),
+                    role=UserRole.TEACHER,
+                    school_id=school.id,
+                    is_active=True
                 )
-            )
+                self.db.add(teacher_user)
+                await self.db.flush()
 
-            return new_teacher
+                # Create teacher profile
+                new_teacher = Teacher(
+                    name=teacher_data.name,
+                    gender=teacher_data.gender,
+                    email=teacher_data.email,
+                    phone=teacher_data.phone,
+                    date_of_joining=teacher_data.date_of_joining,
+                    date_of_birth=teacher_data.date_of_birth,
+                    tsc_number=teacher_data.tsc_number,
+                    address=teacher_data.address,
+                    user_id=teacher_user.id,
+                    school_id=school.id
+                )
+                self.db.add(new_teacher)
+                await self.db.flush()
+                await self.db.refresh(new_teacher)
 
-        except IntegrityError as e:
-            logger.error(f"Database Integrity Error: {e}")
-            raise HTTPException(
-                status_code=400,
-                detail="Database integrity error, please check the input data."
-            )
-        except Exception as e:
-            logger.error(f"Error creating teacher: {str(e)}")
-            raise HTTPException(
-                status_code=500,
-                detail="An unexpected error occurred while creating the teacher."
-            )
+                # Schedule welcome email
+                # background_tasks.add_task(
+                #     send_email,
+                #     recipient_email=new_teacher.email,
+                #     subject="Welcome to School Management System - Teacher Account Created",
+                #     body=self._generate_welcome_email(
+                #         name=new_teacher.name,
+                #         email=teacher_data.email,
+                #         password=temp_password
+                #     )
+                # )
 
-    @staticmethod
-    def _generate_welcome_email(name: str, email: str, password: str) -> str:
-        return f"""
-        Dear {name},
-        
-        Your teacher account has been created in the School Management System.
-        
-        Your login credentials are:
-        Email: {email}
-        Temporary Password: {password}
-        
-        Please change your password after your first login.
-        
-        Best regards,
-        School Management Team
-        """
+                # Convert to dict to avoid async issues
+                return {
+                    "id": new_teacher.id,
+                    "name": new_teacher.name,
+                    "gender": new_teacher.gender,
+                    "email": new_teacher.email,
+                    "phone": new_teacher.phone,
+                    "date_of_joining": new_teacher.date_of_joining,
+                    "date_of_birth": new_teacher.date_of_birth,
+                    "tsc_number": new_teacher.tsc_number,
+                    "address": new_teacher.address,
+                    "created_at": new_teacher.created_at,
+                    "updated_at": new_teacher.updated_at
+                }
+
+            except IntegrityError as e:
+                logger.error(f"Database Integrity Error: {e}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Database integrity error, please check the input data."
+                )
+            except Exception as e:
+                logger.error(f"Error creating teacher: {str(e)}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="An unexpected error occurred while creating the teacher."
+                )
 
     async def list_teachers(self, registration_number: str) -> List[Teacher]:
         school = await self._get_school(registration_number)

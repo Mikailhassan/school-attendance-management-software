@@ -306,14 +306,27 @@ class SchoolService:
         return school
 
     async def get_school(self, school_id: int) -> School:
-        """Get school by ID"""
-        query = select(School).where(School.id == school_id)
-        result = await self.db.execute(query)
-        school = result.scalar_one_or_none()
-        
-        if not school:
-            raise SchoolNotFoundException(f"School with ID {school_id} not found")
-        return school
+        """Get school by ID with proper session handling"""
+        try:
+            # Create the query
+            query = select(School).where(School.id == school_id)
+            logger.info(f"Executing query for school_id: {school_id}")
+            
+            # Execute the query using the session
+            result = await self.db.execute(query)
+            school = result.scalar_one_or_none()
+            
+            if not school:
+                logger.warning(f"School with ID {school_id} not found")
+                raise SchoolNotFoundException(f"School with ID {school_id} not found")
+            
+            logger.info(f"Found school: {school.id}")
+            return school
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Database error: {str(e)}")
+            raise DatabaseException(f"Database error: {str(e)}")
+
 
     async def list_schools(
         self,

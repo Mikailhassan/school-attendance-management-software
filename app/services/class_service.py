@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from sqlalchemy.orm import joinedload
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict,Union,Any
 from fastapi import HTTPException, status
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -13,7 +13,7 @@ from app.schemas.school.requests import (
     ClassUpdateRequest,
     StreamUpdateRequest
 )
-from app.schemas.school.responses import ClassResponse, StreamResponse
+from app.schemas.school.responses import ClassResponse, StreamResponse, ClassDetailsResponse
 from app.core.logging import logger
 from app.core.exceptions import (
     ResourceNotFoundException,
@@ -98,13 +98,13 @@ class ClassService:
             school = await self.get_school_by_registration(registration_number)
             await self.validate_class_name(school.id, class_data.name)
             
-            
             new_class = Class(
                 name=class_data.name,
                 school_id=school.id,
             )
             self.db.add(new_class)
             await self.db.flush()
+            await self.db.commit()  
             await self.db.refresh(new_class)  
             
             return new_class
@@ -167,35 +167,70 @@ class ClassService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Internal server error while creating classes"
             )
-    async def get_class(self, class_id: int, school_id: int) -> Class:
-        """Get a class by ID and school ID with relationships loaded"""
-        try:
-            result = await self.db.execute(
-                select(Class)
-                .options(
-                    joinedload(Class.streams),
-                    joinedload(Class.school)
-                )
-                .where(
-                    and_(
-                        Class.id == class_id,
-                        Class.school_id == school_id
-                    )
+    async def get_class(self, class_id: int, school_id: int) -> Dict[str, Any]:
+        query = (
+            select(Class)
+            .options(joinedload(Class.streams))
+            .where(
+                and_(
+                    Class.id == class_id,
+                    Class.school_id == school_id
                 )
             )
-            class_obj = result.unique().scalar_one_or_none()
-            if not class_obj:
-                raise ResourceNotFoundException(f"Class with ID {class_id} not found")
-            return class_obj
-        except ResourceNotFoundException:
-            raise
-        except Exception as e:
-            logger.error(f"Error fetching class: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal server error while fetching class"
-            )
+        )
+        
+        result = await self.db.execute(query)
+        class_obj = result.unique().scalar_one_or_none()
+        
+        if not class_obj:
+            raise ResourceNotFoundException(f"Class with ID {class_id} not found")
+            
+        # Convert SQLAlchemy model to dict
+        return {
+            "id": class_obj.id,
+            "name": class_obj.name,
+            "streams": [
+                {
+                    "id": stream.id,
+                    "name": stream.name,
+                    "class_id": stream.class_id,
+                    "school_id": stream.school_id
+                }
+                for stream in class_obj.streams
+            ]
+        }
 
+    async def list_classes(
+        self,
+        registration_number: str,
+        include_streams: bool = False
+    ) -> List[Dict[str, Any]]:
+        school = await self.get_school_by_registration(registration_number)
+        
+        query = select(Class).where(Class.school_id == school.id)
+        if include_streams:
+            query = query.options(joinedload(Class.streams))
+            
+        result = await self.db.execute(query)
+        classes = result.scalars().all()
+        
+        return [
+            {
+                "id": class_.id,
+                "name": class_.name,
+                "school_id": class_.school_id,
+                "streams": [
+                    {
+                        "id": stream.id,
+                        "name": stream.name,
+                        "class_id": stream.class_id,
+                        "school_id": stream.school_id
+                    }
+                    for stream in class_.streams
+                ] if include_streams else []
+            }
+            for class_ in classes
+        ]
     async def update_class(
         self, 
         registration_number: str, 
@@ -240,62 +275,87 @@ class ClassService:
         stream_data: StreamCreateRequest
     ) -> Stream:
         """Create a new stream within a class using class name instead of ID"""
-        try:
-            # Get school first
-            school = await self.get_school_by_registration(registration_number)
-            
-            # Get class by name
-            class_result = await self.db.execute(
-                select(Class).where(
-                    Class.school_id == school.id,
-                    Class.name == class_name
+        # Start a regular transaction instead of a nested one
+        async with self.db.begin() as transaction:
+            try:
+                # Get school first
+                school = await self.get_school_by_registration(registration_number)
+                
+                # Validate class name format
+                if not class_name or not class_name.strip():
+                    raise ValidationError("Class name cannot be empty")
+                
+                # Get class by name
+                class_result = await self.db.execute(
+                    select(Class).where(
+                        Class.school_id == school.id,
+                        Class.name == class_name
+                    )
                 )
-            )
-            class_obj = class_result.scalar_one_or_none()
-            if not class_obj:
-                raise ResourceNotFoundException(f"Class '{class_name}' not found")
+                class_obj = class_result.scalar_one_or_none()
+                if not class_obj:
+                    raise ResourceNotFoundException(f"Class '{class_name}' not found")
 
-            # Validate stream name uniqueness in this class
-            existing_stream = await self.db.execute(
-                select(Stream).where(
-                    Stream.class_id == class_obj.id,
-                    Stream.name == stream_data.name
+                # Validate stream name
+                if not stream_data.name or not stream_data.name.strip():
+                    raise ValidationError("Stream name cannot be empty")
+
+                # Format the stream name by combining class name and stream identifier
+                stream_identifier = stream_data.name.strip()
+                if stream_identifier.lower().startswith(class_name.lower()):
+                    stream_identifier = stream_identifier[len(class_name):].strip()
+                
+                stream_identifier = stream_identifier.lstrip(' -_')
+                formatted_stream_name = f"{class_name} {stream_identifier}"
+
+                # Validate stream name uniqueness in this class (case insensitive)
+                existing_stream = await self.db.execute(
+                    select(Stream).where(
+                        Stream.class_id == class_obj.id,
+                        func.lower(Stream.name) == func.lower(formatted_stream_name)
+                    )
                 )
-            )
-            if existing_stream.scalar_one_or_none():
-                raise DuplicateResourceException(
-                    f"Stream '{stream_data.name}' already exists in class '{class_name}'"
+                if existing_stream.scalar_one_or_none():
+                    raise DuplicateResourceException(
+                        f"Stream '{formatted_stream_name}' already exists in class '{class_name}'"
+                    )
+
+                # Create the new stream with formatted name
+                new_stream = Stream(
+                    name=formatted_stream_name,
+                    class_id=class_obj.id,
+                    school_id=school.id
                 )
+                self.db.add(new_stream)
+                await self.db.flush()
+                await self.db.refresh(new_stream)
+                
+                # The transaction will be automatically committed if no exceptions occur
+                return new_stream
 
-            # Create the new stream
-            new_stream = Stream(
-                name=stream_data.name,
-                class_id=class_obj.id,
-                school_id=school.id
-            )
-            self.db.add(new_stream)
-            await self.db.flush()
-            await self.db.refresh(new_stream)
-            
-            return new_stream
-
-        except ResourceNotFoundException as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(e)
-            )
-        except DuplicateResourceException as e:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(e)
-            )
-        except Exception as e:
-            logger.error(f"Error creating stream: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal server error while creating stream"
-            )
-
+            except (ValidationError, ResourceNotFoundException, DuplicateResourceException) as e:
+                # No need to explicitly rollback - the context manager will handle it
+                if isinstance(e, ValidationError):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=str(e)
+                    )
+                elif isinstance(e, ResourceNotFoundException):
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=str(e)
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=str(e)
+                    )
+            except Exception as e:
+                logger.error(f"Error creating stream: {str(e)}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal server error while creating stream"
+                )
     async def get_stream(
         self, 
         stream_id: int, 
@@ -330,17 +390,18 @@ class ClassService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Internal server error while fetching stream"
             )
-
+            
     async def list_streams(
-        self, 
-        registration_number: str, 
+        self,
+        registration_number: str,
         class_id: int
     ) -> List[Stream]:
-        """List all streams in a class with proper error handling"""
+        """Get all streams for a specific class"""
         try:
+            # First verify the school exists
             school = await self.get_school_by_registration(registration_number)
-            await self.get_class(class_id, school.id)  # Verify class exists
-
+            
+            # Then get all streams for the class
             result = await self.db.execute(
                 select(Stream)
                 .options(
@@ -349,23 +410,69 @@ class ClassService:
                 )
                 .where(
                     and_(
-                        Stream.school_id == school.id,
-                        Stream.class_id == class_id
+                        Stream.class_id == class_id,
+                        Stream.school_id == school.id
                     )
                 )
             )
-            return result.unique().scalars().all()
-
+            
+            streams = result.unique().scalars().all()
+            return streams
+            
+        except ResourceNotFoundException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching streams for class {class_id}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal server error while fetching streams"
+            )
+                
+    async def get_class_with_streams(
+        self,
+        registration_number: str,
+        class_id: int = None
+    ) -> Union[Class, List[Class]]:
+        """
+        Fetch a single class or all classes with their associated streams.
+        If class_id is provided, returns a single class, otherwise returns all classes.
+        Includes proper error handling.
+        """
+        try:
+            school = await self.get_school_by_registration(registration_number)
+            
+            # Build base query with stream relationships
+            query = select(Class).options(
+                joinedload(Class.streams),
+                joinedload(Class.streams).joinedload(Stream.students)
+            ).where(Class.school_id == school.id)
+            
+            # Add class_id filter if provided
+            if class_id is not None:
+                query = query.where(Class.id == class_id)
+                
+            result = await self.db.execute(query)
+            
+            if class_id is not None:
+                # Return single class
+                class_obj = result.unique().scalar_one_or_none()
+                if not class_obj:
+                    raise ResourceNotFoundException(f"Class with id {class_id} not found")
+                return class_obj
+            else:
+                # Return all classes
+                return result.unique().scalars().all()
+                
         except ResourceNotFoundException as e:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=str(e)
             )
         except Exception as e:
-            logger.error(f"Error listing streams: {str(e)}")
+            logger.error(f"Error fetching class with streams: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal server error while listing streams"
+                detail="Internal server error while fetching class data"
             )
 
     async def update_stream(

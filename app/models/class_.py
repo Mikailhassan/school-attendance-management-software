@@ -10,6 +10,7 @@ class Class(TenantModel):
     school_id = Column(Integer, ForeignKey("schools.id"), nullable=False, index=True)
 
     # Relationships
+    students = relationship("Student", back_populates="student_class")
     streams = relationship("Stream", back_populates="class_")
     school = relationship(
         "School", 

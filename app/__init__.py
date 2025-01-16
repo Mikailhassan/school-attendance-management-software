@@ -12,6 +12,7 @@ from sqlalchemy.future import select
 from app.middleware.request_id import RequestIDMiddleware
 from app.services.auth_service import SessionManager
 from app.middleware.auth import AuthMiddleware
+from app.routes import student_management
 import logging
 from dotenv import load_dotenv
 logging.basicConfig(level=settings.LOG_LEVEL)
@@ -61,7 +62,8 @@ def create_app() -> FastAPI:
     app.include_router(teacher.router, prefix="/api/v1/teachers", tags=["Teachers"])
     app.include_router(student.router, prefix="/api/v1/students", tags=["Students"])
     app.include_router(parent.router, prefix="/api/v1/parents", tags=["Parents"])
-    # app.include_router(attendance.router, prefix="/api/v1/attendance", tags=["Attendance"])
+    app.include_router(attendance.router, prefix="/api/v1/attendance", tags=["Attendance"])
+    app.include_router(student_management.router)
 
     @app.on_event("startup")
     async def startup_event():

@@ -15,6 +15,38 @@ class StudentBaseResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        
+        
+class StudentResponse(BaseModel):
+    id: int
+    name: str
+    admission_number: str
+    class_id: int
+    stream_id: Optional[int]
+    school_id: int
+    date_of_birth: date
+   
+    
+    # Include basic parent info
+    parent_name: str
+    parent_phone: str
+    parent_email: EmailStr
+
+    class Config:
+        from_attributes = True
+        
+        
+        
+class PaginatedStudentResponse(BaseModel):
+    items: List[StudentResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    
+    class Config:
+        from_attributes = True        
+        
 class StudentCreateResponse(StudentBaseResponse):
     created_at: datetime
     updated_at: Optional[datetime] = None

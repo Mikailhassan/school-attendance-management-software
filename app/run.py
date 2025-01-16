@@ -1,6 +1,6 @@
 import uvicorn
 from fastapi import FastAPI
-from app import create_app  # Ensure create_app is imported
+from app import create_app  
 
 # Create the FastAPI app using the create_app function
 app = create_app()

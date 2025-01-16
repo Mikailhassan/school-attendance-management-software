@@ -75,6 +75,9 @@ class SessionListResponse(BaseModel):
 class ClassResponse(BaseModel):
     id: int
     name: str
+    
+    class Config:
+        from_attributes = True
    
 
 class ClassListResponse(BaseModel):
@@ -82,19 +85,38 @@ class ClassListResponse(BaseModel):
     page: int
     size: int
     items: List[ClassResponse]
+    
+    
+    class Config:
+        from_attributes = True
 
 class StreamResponse(BaseModel):
     id: int
     name: str
     class_id: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
+    school_id: int
+    
+    class Config:
+        from_attributes = True
+
+class ClassDetailsResponse(BaseModel):
+    id: int
+    name: str
+    streams: List[StreamResponse]
+    
+    class Config:
+        from_attributes = True
+        
+   
 
 class StreamListResponse(BaseModel):
     total: int
     page: int
     size: int
     items: List[StreamResponse]
+    
+    class Config:
+        from_attributes = True
 
 # Generic response models for common operations
 class MessageResponse(BaseModel):
@@ -132,4 +154,10 @@ class ClassStatisticsResponse(BaseModel):
     school_id: int
 
     class Config:
-        from_attributes = True                
+        from_attributes = True     
+        
+
+
+class ValidationErrorResponse(BaseModel):
+    error: str
+    detail: Dict[str, List[str]]                   

@@ -15,7 +15,7 @@ import asyncio
 from app.core.database import get_db
 from pydantic_settings import BaseSettings
 from pydantic import validator, field_validator
-from app.models import User, RevokedToken, FailedLoginAttempt
+from app.models import User, RevokedToken, FailedLoginAttempt, School
 from app.core.errors import (
     ConfigurationError,
     AuthenticationError,
@@ -177,6 +177,13 @@ class AuthService:
     @property
     def lockout_duration_minutes(self) -> int:
         return self.settings.LOCKOUT_DURATION_MINUTES
+    
+    
+    async def get_school_by_registration(self, registration_number: str) -> School:
+        """Get school by registration number"""
+        query = select(School).where(School.registration_number == registration_number)
+        result = await self.db.execute(query)
+        return result.scalar_one_or_none()
 
     async def _cleanup_rate_limit_cache(self) -> None:
         """Clean up expired rate limit entries"""
@@ -303,18 +310,26 @@ class AuthService:
     async def get_user_by_email(self, email: str) -> Optional[User]:
         """Get user by email with necessary relationships"""
         try:
+            # First get just the user with school relationship
             query = (
                 select(User)
-                .options(
-                    selectinload(User.school),
-                    selectinload(User.parent_profile),
-                    selectinload(User.teacher_profile),
-                    selectinload(User.student_profile)
-                )
+                .options(selectinload(User.school))
                 .where(func.lower(User.email) == email.lower())
             )
             result = await self.db.execute(query)
-            return result.unique().scalar_one_or_none()
+            user = result.unique().scalar_one_or_none()
+            
+            if user:
+                # Then load only the relevant profile based on role
+                if user.role == UserRole.PARENT:
+                    await self.db.refresh(user, ['parent_profile'])
+                elif user.role == UserRole.TEACHER:
+                    await self.db.refresh(user, ['teacher_profile'])
+                elif user.role == UserRole.STUDENT:
+                    await self.db.refresh(user, ['student_profile'])
+                
+            return user
+            
         except Exception as e:
             logger.error(f"Error retrieving user by email: {str(e)}")
             return None
@@ -650,7 +665,7 @@ class AuthService:
             await self.check_rate_limit(email, client_ip)  
             await self.check_account_lockout(email, language)
             
-            # Get user from database directly
+            # Get user from database with relationships
             user = await self.get_user_by_email(email)
             if not user:
                 await self.record_failed_attempt(email, client_ip)
@@ -670,12 +685,18 @@ class AuthService:
             # Clear failed attempts on successful login
             await self.clear_failed_attempts(email, client_ip)
 
+            # Get school registration if user has a school
+            school_registration = None
+            if user.school_id and user.school:
+                school_registration = user.school.registration_number
+
             # Generate token data with comprehensive claims
             token_data = {
                 "sub": str(user.id),
                 "email": user.email,
                 "role": user.role,
                 "school_id": str(user.school_id) if user.school_id else None,
+                "school_reg": school_registration,
                 "user_id": str(user.id), 
                 "device_info": {
                     "ip": client_ip,
@@ -749,16 +770,29 @@ class AuthService:
                     "user_id": str(user.id),
                     "email": user.email,
                     "ip": client_ip
-                    
                 }
             )
 
+            # Create user response data manually
+            user_data = {
+                "id": str(user.id),
+                "email": user.email,
+                "role": user.role,
+                "is_active": user.is_active,
+                "school_id": str(user.school_id) if user.school_id else None,
+                "created_at": user.created_at,
+                "updated_at": user.updated_at,
+                "school_registration": school_registration,
+                "phone_number": user.phone_number if hasattr(user, 'phone_number') else None
+            }
+
+            # Create response
             return LoginResponse(
-                user=UserResponse.from_orm(user).model_dump(),
+                user=UserResponse(**user_data),
                 access_token=access_token,
                 refresh_token=refresh_token,
                 token_type="bearer",
-                expires_in=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Return expiration in seconds
+                expires_in=self.settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
                 refresh_expires_in=self.settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
             )
 
@@ -836,9 +870,9 @@ class AuthService:
                     get_error_message("invalid_refresh_token", language)
                 )
             
-            # Verify token expiration with grace period
+           
             exp = payload.get("exp")
-            if not exp or datetime.utcnow() > datetime.fromtimestamp(exp + 300):  # 5 min grace period
+            if not exp or datetime.utcnow() > datetime.fromtimestamp(exp + 300):  
                 raise AuthenticationError("Refresh token has expired")
             
             # Create new token data
@@ -846,6 +880,7 @@ class AuthService:
                 sub=payload.get("sub"),
                 email=payload.get("email"),
                 role=payload.get("role"),
+                school_reg=payload.get("school_reg"),  #
                 school_id=payload.get("school_id")
             )
             
@@ -896,7 +931,6 @@ class AuthService:
                     "code": "INTERNAL_SERVER_ERROR"
                 }
             )
-
     async def logout(
         self,
         token: str,

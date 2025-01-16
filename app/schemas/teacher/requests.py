@@ -18,8 +18,7 @@ class TeacherCreate(BaseModel):
     date_of_birth: date
     tsc_number: str
     address: Optional[str] = None
-    school_id: int
-    user_id: int
+   
 
     @validator('tsc_number')
     def validate_tsc_number(cls, v):

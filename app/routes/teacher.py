@@ -53,13 +53,14 @@ async def register_teacher(
     teacher_service = TeacherService(db)
     
     try:
-        teacher = await teacher_service.register_teacher(
+        teacher_dict = await teacher_service.register_teacher(
             clean_reg_number,
             teacher_data,
             background_tasks
         )
         await db.commit()
-        return TeacherResponse.from_orm(teacher)
+      
+        return TeacherResponse(**teacher_dict)
     except Exception as e:
         await db.rollback()
         if isinstance(e, HTTPException):
