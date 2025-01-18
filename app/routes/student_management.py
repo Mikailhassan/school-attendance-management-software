@@ -191,10 +191,10 @@ async def get_students(
     search: Optional[str] = Query(None, description="Search by student name or admission number"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
-    db: AsyncSession = Depends(get_db),
+    db: Session = Depends(get_db),
     current_user: UserInDB = Depends(get_current_school_admin)
 ):
-    """Get paginated list of students with proper async handling"""
+    """Get paginated list of students"""
     try:
         clean_registration_number = registration_number.strip('{}')
         
@@ -207,11 +207,8 @@ async def get_students(
         if not school:
             raise HTTPException(status_code=404, detail="School not found")
             
-        if school.id != current_user.school_id:
-            raise HTTPException(status_code=403, detail="Access denied to this school's data")
-
-        # Build base query
-        stmt = (
+        # Base query with proper joins
+        query = (
             select(Student, Parent, Class, Stream)
             .outerjoin(Parent, Student.parent_id == Parent.id)
             .outerjoin(Class, Student.class_id == Class.id)
@@ -221,12 +218,12 @@ async def get_students(
 
         # Apply filters
         if class_id:
-            stmt = stmt.where(Student.class_id == class_id)
+            query = query.where(Student.class_id == class_id)
         if stream_id:
-            stmt = stmt.where(Student.stream_id == stream_id)
+            query = query.where(Student.stream_id == stream_id)
         if search:
             search_term = f"%{search}%"
-            stmt = stmt.where(
+            query = query.where(
                 or_(
                     Student.name.ilike(search_term),
                     Student.admission_number.ilike(search_term)
@@ -234,24 +231,25 @@ async def get_students(
             )
 
         # Get total count with proper await
-        count_result = await db.execute(
-            select(func.count()).select_from(stmt.subquery())
+        count_stmt = select(func.count()).select_from(
+            select(Student).where(Student.school_id == school.id)
         )
-        total_count = count_result.scalar()
+        total = await db.execute(count_stmt)
+        total = total.scalar()
 
         # Apply pagination
-        stmt = (
-            stmt.order_by(Student.name)
-            .offset((page - 1) * page_size)
+        query = (
+            query.offset((page - 1) * page_size)
             .limit(page_size)
+            .order_by(Student.name)
         )
-
+        
         # Execute query with proper await
-        result = await db.execute(stmt)
+        result = await db.execute(query)
         rows = result.unique().all()
 
         # Transform results
-        students = [
+        student_responses = [
             {
                 "id": student.id,
                 "name": student.name,
@@ -259,7 +257,13 @@ async def get_students(
                 "class_id": student.class_id,
                 "stream_id": student.stream_id,
                 "school_id": student.school_id,
+                "parent_id": student.parent_id,
                 "date_of_birth": student.date_of_birth,
+                "gender": getattr(student, 'gender', None),
+                "address": getattr(student, 'address', None),
+                "photo": getattr(student, 'photo', None),
+                "fingerprint": getattr(student, 'fingerprint', None),
+                "date_of_joining": getattr(student, 'date_of_joining', None),
                 "parent_name": parent.name if parent else None,
                 "parent_phone": parent.phone if parent else None,
                 "parent_email": parent.email if parent else None,
@@ -270,11 +274,11 @@ async def get_students(
         ]
 
         return PaginatedStudentResponse(
-            items=students,
-            total=total_count,
+            items=student_responses,
+            total=total,
             page=page,
             page_size=page_size,
-            total_pages=math.ceil(total_count / page_size)
+            total_pages=math.ceil(total / page_size)
         )
 
     except SQLAlchemyError as e:
