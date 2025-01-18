@@ -11,6 +11,15 @@ class SchoolType(str, Enum):
     MIXED = "mixed"
     TECHNICAL = "technical"
     VOCATIONAL = "vocational"
+    
+class Weekday(str, Enum):
+    MONDAY = "MONDAY"
+    TUESDAY = "TUESDAY"
+    WEDNESDAY = "WEDNESDAY"
+    THURSDAY = "THURSDAY"
+    FRIDAY = "FRIDAY"
+    SATURDAY = "SATURDAY"
+    SUNDAY = "SUNDAY"    
 
 class SchoolStatus(str, Enum):
     ACTIVE = "active"
@@ -167,29 +176,20 @@ class SchoolUpdateRequest(BaseModel):
     
 class SessionCreateRequest(BaseModel):
     name: str
-    start_time: time
-    end_time: time
     start_date: date
     end_date: date
-    description: Optional[str] = None
+    start_time: time
+    end_time: time
+    weekdays: List[Weekday]
+    description: str | None = None
 
     @model_validator(mode='after')
     def validate_dates(self) -> 'SessionCreateRequest':
         if self.start_date >= self.end_date:
             raise ValueError('end_date must be after start_date')
         return self
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "name": "2024-2025",
-                "start_date": "2024-01-01T00:00:00Z",
-                "end_date": "2024-12-31T23:59:59Z",
-                "is_current": True,
-                "description": "Academic Year 2024-2025"
-            }
-        }
-    }
+    class config:
+        orm_mode = True
 
 class SessionUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=50)

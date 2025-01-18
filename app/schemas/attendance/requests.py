@@ -11,9 +11,19 @@ class AttendanceRequest(BaseModel):
     class_id: int
     stream_id: int
     status: str
-    check_in_time: Optional[datetime]
-    check_out_time: Optional[datetime]
     remarks: Optional[str]
+
+class AttendanceCreate(BaseModel):
+    admission_number : int
+    session_id: int
+    school_id: int
+    class_id: int
+    stream_id: int
+    status: str
+    remarks: Optional[str]
+    
+    class config:
+        orm_mode = True
 
 class StreamAttendanceRequest(BaseModel):
     stream_id: int

@@ -16,9 +16,6 @@ class StudentAttendance(AttendanceBase):
     def student_id(cls):
         return Column(Integer, ForeignKey("students.id"), nullable=False)
 
-    @declared_attr
-    def session_id(cls):  # Added session foreign key
-        return Column(Integer, ForeignKey("sessions.id"), nullable=False)
 
     # Relationships
     @declared_attr

@@ -1,6 +1,6 @@
 # app/schemas/attendance/info.py
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, date, time
 from typing import Optional, List
 
 class StreamInfo(BaseModel):
@@ -43,11 +43,30 @@ class StudentInfo(BaseModel):
 class SessionInfo(BaseModel):
     id: int
     name: str
-    start_time: datetime
-    end_time: datetime
+    start_time: time
+    end_time: time
+    start_date: date
+    end_date: date
+    weekdays: List[str]
+    is_active: bool
+    description: str | None = None
+
+    class Config:
+        from_attributes = True
+        
+class AttendanceInfo(BaseModel):
+    student_id: int
+    class_id: int  
+    stream_id: int  
+    session_id: int
+    school_id: int
+    date: datetime
+    class_name: str
+    stream_name: str
     status: str
-    class_id: Optional[int]
-    stream_id: Optional[int]
+    check_in_time: Optional[datetime]
+    check_out_time: Optional[datetime]
+    remarks: Optional[str]
 
     class Config:
         from_attributes = True

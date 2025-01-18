@@ -67,3 +67,11 @@ class ClassAttendanceSummary(BaseModel):
 
     class Config:
         from_attributes = True
+        
+class AttendanceResponse(BaseModel):
+    student_id: int
+    status: str
+    remarks: Optional[str]
+
+    class Config:
+        from_attributes = True        

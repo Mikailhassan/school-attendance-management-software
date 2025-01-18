@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Request
 from sqlalchemy.orm import Session, joinedload, selectinload, load_only 
-from sqlalchemy import func, select, update, or_
+from sqlalchemy import func, select, update, or_, extract 
 from typing import Dict, Any, Optional,List,Union
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.params import Query
@@ -921,7 +921,6 @@ async def delete_stream(
 #         "streams": [{"id": s.id, "name": s.name} for s in streams]
 #     }    
 
-    
 
 @router.post("/schools/{registration_number}/sessions", response_model=SessionResponse)
 async def create_session(
@@ -931,67 +930,80 @@ async def create_session(
     current_user: UserInDB = Depends(get_current_school_admin)
 ):
     """Create a new academic session for a school"""
-    clean_registration_number = registration_number.strip('{}')
-    
-    # Verify school exists
-    school = await db.execute(
-        select(School).where(School.registration_number == clean_registration_number)
-    )
-    school = school.scalar_one_or_none()
-    
-    if not school:
-        raise HTTPException(status_code=404, detail="School not found")
-    
-    # Validate dates
-    if session_data.end_date <= session_data.start_date:
-        raise HTTPException(
-            status_code=400,
-            detail="End date must be after start date"
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        
+        # Verify school exists
+        school = await db.execute(
+            select(School).where(School.registration_number == clean_registration_number)
         )
-    
-    # Validate times
-    if session_data.end_time <= session_data.start_time:
-        raise HTTPException(
-            status_code=400,
-            detail="End time must be after start time"
-        )
-    
-    # Check for time overlaps with existing sessions
-    existing_session = await db.execute(
-        select(Session).where(
-            and_(
-                Session.school_id == school.id,
-                Session.start_date <= session_data.end_date,
-                Session.end_date >= session_data.start_date,
-                Session.start_time < session_data.end_time,
-                Session.end_time > session_data.start_time,
-                Session.is_active == True
+        school = school.scalar_one_or_none()
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+        
+        # Check authorization
+        if current_user.school_id != school.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to create sessions for this school"
             )
+        
+        # Validate dates
+        if session_data.end_date < session_data.start_date:
+            raise HTTPException(
+                status_code=400,
+                detail="End date must be on or after start date"
+            )
+        
+        # Validate times
+        if (
+            session_data.end_date == session_data.start_date and 
+            session_data.end_time <= session_data.start_time
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="End time must be after start time if on the same day"
+            )
+        
+        # Normalize weekdays to uppercase
+        weekdays = [day.upper() for day in session_data.weekdays]
+        valid_days = {"MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"}
+        if not set(weekdays).issubset(valid_days):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Weekdays must be one of {', '.join(valid_days)}"
+            )
+        
+        # Create new session
+        new_session = Session(
+            name=session_data.name,
+            start_date=session_data.start_date,
+            end_date=session_data.end_date,
+            start_time=session_data.start_time,
+            end_time=session_data.end_time,
+            weekdays=weekdays,
+            description=session_data.description,
+            is_active=True,
+            school_id=school.id
         )
-    )
-    if existing_session.scalar_one_or_none():
+        
+        db.add(new_session)
+        await db.commit()
+        await db.refresh(new_session)
+        
+        return new_session
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.exception("Unexpected error in create_session")
         raise HTTPException(
-            status_code=400,
-            detail="Session times overlap with an existing active session during these dates"
+            status_code=500,
+            detail="Internal server error while creating session"
         )
-    
-    # Create new session
-    new_session = Session(
-        name=session_data.name,
-        start_date=session_data.start_date,
-        end_date=session_data.end_date,
-        start_time=session_data.start_time,
-        end_time=session_data.end_time,
-        description=session_data.description,
-        is_active=True,
-        school_id=school.id
-    )
-    
-    db.add(new_session)
-    await db.commit()
-    await db.refresh(new_session)
-    
-    return new_session
+
 @router.get("/schools/{registration_number}/sessions", response_model=List[SessionResponse])
 async def list_sessions(
     registration_number: str,

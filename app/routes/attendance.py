@@ -6,9 +6,11 @@ from datetime import datetime, date
 from app.core.dependencies import (
     get_current_user,
     verify_teacher,
+    get_current_teacher,
     get_db,
     get_email_service,
-    get_sms_service
+    get_sms_service,
+    get_current_school_admin
 )
 from app.services.attendance_service import AttendanceService
 from app.services.email_service import EmailService
@@ -21,9 +23,14 @@ from app.schemas.attendance import (
     StudentInfo,
     SessionInfo
 )
+from app.schemas.attendance.responses import AttendanceResponse
+from app.schemas.attendance.requests import AttendanceCreate
+from app.schemas.attendance.info import AttendanceInfo
+from app.core.logging import logger
+from app.schemas.school import SessionResponse
 from app.models.user import User
 
-router = APIRouter(tags=["attendance"])
+router = APIRouter(prefix="/schools/{registration_number}", tags=["attendance"])
 
 def get_attendance_service(
     db: Session = Depends(get_db),
@@ -32,162 +39,362 @@ def get_attendance_service(
 ) -> AttendanceService:
     return AttendanceService(db, email_service, sms_service)
 
-# Session Management Endpoints
 @router.get("/sessions/active", response_model=SessionInfo)
 async def get_active_session(
-    class_id: int,
+    registration_number: str,
     attendance_service: AttendanceService = Depends(get_attendance_service),
-    current_user: User = Depends(get_current_user)
-):
-    """Get active session for attendance marking."""
-    class_info = attendance_service.get_class_info(class_id)
-    verify_teacher(current_user, class_info.school_id)
-    
-    session = attendance_service.get_active_session(class_id)
-    if not session:
-        raise HTTPException(
-            status_code=404,
-            detail="No active session found for this class"
-        )
-    return session
+    current_user: User = Depends(get_current_school_admin)
+) -> SessionInfo:
+    """
+    Get active session for attendance marking.
+    Returns the currently active session that applies to the current day and time.
+    """
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        logger.debug(f"Processing request for school: {clean_registration_number}")
+        
+        # Get school using registration number
+        school = await attendance_service.get_school_by_registration(clean_registration_number)
+        if not school:
+            raise HTTPException(
+                status_code=404,
+                detail="School not found"
+            )
+        
+        # Check authorization
+        if current_user.school_id != school.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to access this school's sessions"
+            )
+        
+        # Get active session for current day and time
+        session = await attendance_service.get_active_session(school.id)
+        if not session:
+            raise HTTPException(
+                status_code=404,
+                detail="No active session found for this school"
+            )
+        
+        return session
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error in get_active_session")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Student List and Information Endpoints
-@router.get("/class/{class_id}/students", response_model=List[StudentInfo])
+@router.get("/classes/{class_id}/students", response_model=List[StudentInfo])
 async def get_class_students(
+    registration_number: str,
     class_id: int,
     stream_id: Optional[int] = None,
     attendance_service: AttendanceService = Depends(get_attendance_service),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_school_admin)
 ):
-    """Get all students in a class with their latest attendance status."""
-    class_info = attendance_service.get_class_info(class_id)
-    verify_teacher(current_user, class_info.school_id)
-    
-    return attendance_service.get_class_students_with_status(class_id, stream_id)
+    """Get all students in a class with their latest attendance status"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        school = attendance_service.get_school_by_registration(clean_registration_number)
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+            
+        if current_user.school_id != school.id:
+            raise HTTPException(status_code=403, detail="Not authorized to access this school's data")
+            
+        return attendance_service.get_class_students_with_status(school.id, class_id, stream_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error getting class students")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Single Student Attendance Marking
-@router.post("/student/mark")
+@router.post("/attendance/{student_id}", response_model=AttendanceInfo)
 async def mark_student_attendance(
-    attendance_data: AttendanceRequest,
+    student_id: int,
+    attendance_data: AttendanceCreate,
     attendance_service: AttendanceService = Depends(get_attendance_service),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_teacher)
 ):
-    """Mark attendance for a single student."""
-    verify_teacher(current_user, attendance_data.school_id)
-    
-    return await attendance_service.mark_student_attendance(
-        attendance_data=attendance_data,
-        student_id=attendance_data.student_id
-    )
+    """Mark attendance for a student"""
+    try:
+        # Get active session first
+        session = await attendance_service.get_active_session(current_user.school_id)
+        if not session:
+            raise HTTPException(
+                status_code=404,
+                detail="No active session found"
+            )
+        
+        # Get student with class and stream info
+        student_info = await attendance_service.get_student_with_details(student_id)
+        if not student_info:
+            raise HTTPException(
+                status_code=404,
+                detail="Student not found"
+            )
+            
+        # Mark attendance with current user ID
+        attendance = await attendance_service.mark_attendance(
+            student_id=student_id,
+            session_id=session.id,
+            attendance_data=attendance_data,
+            current_user_id=current_user.id
+        )
+        
+        # Create response with all required fields
+        return AttendanceInfo(
+            student_id=student_id,
+            class_id=int(student_info.class_id),  # Ensure it's an integer
+            stream_id=int(student_info.stream_id),  # Ensure it's an integer
+            session_id=session.id,
+            school_id=current_user.school_id,
+            date=attendance.date,
+            class_name=student_info.class_name,
+            stream_name=student_info.stream_name,
+            status=attendance.status,
+            check_in_time=attendance.check_in_time,
+            check_out_time=attendance.check_out_time,
+            remarks=attendance.remarks
+        )
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.exception("Type conversion error in mark_student_attendance")
+        raise HTTPException(status_code=500, detail="Invalid ID format")
+    except Exception as e:
+        logger.exception("Unexpected error in mark_student_attendance")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Stream Attendance Marking
-@router.post("/stream/mark")
+@router.post("/sessions/{session_id}/streams/{stream_id}", response_model=List[AttendanceResponse])
 async def mark_stream_attendance(
+    registration_number: str,
+    session_id: int,
+    stream_id: int,
     attendance_data: StreamAttendanceRequest,
     attendance_service: AttendanceService = Depends(get_attendance_service),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_school_admin)
 ):
-    """Mark attendance for all students in a stream."""
-    verify_teacher(current_user, attendance_data.school_id)
-    
-    return await attendance_service.mark_stream_attendance(attendance_data)
+    """Mark attendance for all students in a stream"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        school = attendance_service.get_school_by_registration(clean_registration_number)
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+            
+        if current_user.school_id != school.id:
+            raise HTTPException(status_code=403, detail="Not authorized to mark attendance for this school")
+        
+        attendance_data.school_id = school.id
+        attendance_data.session_id = session_id
+        attendance_data.stream_id = stream_id
+        
+        return await attendance_service.mark_stream_attendance(attendance_data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error marking stream attendance")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Class Attendance Marking
-@router.post("/class/{class_id}/mark")
+@router.post("/sessions/{session_id}/classes/{class_id}", response_model=List[AttendanceResponse])
 async def mark_class_attendance(
+    registration_number: str,
+    session_id: int,
     class_id: int,
     attendance_data: BulkAttendanceRequest,
     attendance_service: AttendanceService = Depends(get_attendance_service),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_school_admin)
 ):
-    """Mark attendance for multiple streams in a class."""
-    verify_teacher(current_user, attendance_data.school_id)
-    
-    marked_attendance = []
-    for stream_id in attendance_data.stream_ids:
-        stream_data = StreamAttendanceRequest(
-            stream_id=stream_id,
-            class_id=class_id,
-            session_id=attendance_data.session_id,
-            school_id=attendance_data.school_id,
-            attendance_data=[
-                data for data in attendance_data.attendance_data 
-                if data.stream_id == stream_id
-            ]
-        )
-        stream_attendance = await attendance_service.mark_stream_attendance(stream_data)
-        marked_attendance.extend(stream_attendance)
-    
-    return marked_attendance
+    """Mark attendance for multiple streams in a class"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        school = attendance_service.get_school_by_registration(clean_registration_number)
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+            
+        if current_user.school_id != school.id:
+            raise HTTPException(status_code=403, detail="Not authorized to mark attendance for this school")
+        
+        attendance_data.school_id = school.id
+        attendance_data.session_id = session_id
+        attendance_data.class_id = class_id
+        
+        marked_attendance = []
+        for stream_id in attendance_data.stream_ids:
+            stream_data = StreamAttendanceRequest(
+                stream_id=stream_id,
+                class_id=class_id,
+                session_id=session_id,
+                school_id=school.id,
+                attendance_data=[
+                    data for data in attendance_data.attendance_data 
+                    if data.stream_id == stream_id
+                ]
+            )
+            stream_attendance = await attendance_service.mark_stream_attendance(stream_data)
+            marked_attendance.extend(stream_attendance)
+        
+        return marked_attendance
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error marking class attendance")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Attendance Modification
-@router.put("/student/{student_id}/update")
+@router.put("/students/{student_id}/attendance", response_model=AttendanceResponse)
 async def update_student_attendance(
+    registration_number: str,
     student_id: int,
     attendance_data: AttendanceRequest,
     attendance_service: AttendanceService = Depends(get_attendance_service),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_school_admin)
 ):
-    """Update attendance for a specific student."""
-    verify_teacher(current_user, attendance_data.school_id)
-    
-    return await attendance_service.update_student_attendance(
-        student_id=student_id,
-        attendance_data=attendance_data
-    )
+    """Update attendance for a specific student"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        school = attendance_service.get_school_by_registration(clean_registration_number)
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+            
+        if current_user.school_id != school.id:
+            raise HTTPException(status_code=403, detail="Not authorized to update attendance for this school")
+        
+        attendance_data.school_id = school.id
+        
+        return await attendance_service.update_student_attendance(
+            student_id=student_id,
+            attendance_data=attendance_data
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error updating student attendance")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Attendance Records Retrieval
-@router.get("/student/{student_id}/records")
+@router.get("/students/{student_id}/attendance", response_model=List[AttendanceResponse])
 async def get_student_attendance_records(
+    registration_number: str,
     student_id: int,
     start_date: date,
     end_date: Optional[date] = None,
     attendance_service: AttendanceService = Depends(get_attendance_service),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_school_admin)
 ):
-    """Get attendance records for a specific student."""
-    student = attendance_service.get_student_info(student_id)
-    verify_teacher(current_user, student.school_id)
-    
-    return attendance_service.get_student_attendance_records(
-        student_id=student_id,
-        start_date=start_date,
-        end_date=end_date
-    )
+    """Get attendance records for a specific student"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        school = attendance_service.get_school_by_registration(clean_registration_number)
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+            
+        if current_user.school_id != school.id:
+            raise HTTPException(status_code=403, detail="Not authorized to view attendance for this school")
+        
+        return attendance_service.get_student_attendance_records(
+            student_id=student_id,
+            start_date=start_date,
+            end_date=end_date
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error getting student attendance records")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/stream/{stream_id}/records")
+@router.get("/streams/{stream_id}/attendance", response_model=List[AttendanceResponse])
 async def get_stream_attendance_records(
+    registration_number: str,
     stream_id: int,
     start_date: date,
     end_date: Optional[date] = None,
     attendance_service: AttendanceService = Depends(get_attendance_service),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_school_admin)
 ):
-    """Get attendance records for an entire stream."""
-    stream = attendance_service.get_stream_info(stream_id)
-    verify_teacher(current_user, stream.school_id)
-    
-    return attendance_service.get_stream_attendance_records(
-        stream_id=stream_id,
-        start_date=start_date,
-        end_date=end_date
-    )
+    """Get attendance records for an entire stream"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        school = attendance_service.get_school_by_registration(clean_registration_number)
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+            
+        if current_user.school_id != school.id:
+            raise HTTPException(status_code=403, detail="Not authorized to view attendance for this school")
+        
+        return attendance_service.get_stream_attendance_records(
+            stream_id=stream_id,
+            start_date=start_date,
+            end_date=end_date
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error getting stream attendance records")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Attendance Statistics and Reports
-@router.get("/class/{class_id}/summary")
+@router.get("/classes/{class_id}/attendance/summary", response_model=dict)
 async def get_class_attendance_summary(
+    registration_number: str,
     class_id: int,
     start_date: date,
     end_date: Optional[date] = None,
     attendance_service: AttendanceService = Depends(get_attendance_service),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_school_admin)
 ):
-    """Get attendance summary statistics for a class."""
-    class_info = attendance_service.get_class_info(class_id)
-    verify_teacher(current_user, class_info.school_id)
+    """Get attendance summary statistics for a class"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        school = attendance_service.get_school_by_registration(clean_registration_number)
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+            
+        if current_user.school_id != school.id:
+            raise HTTPException(status_code=403, detail="Not authorized to view attendance for this school")
+        
+        return attendance_service.get_class_attendance_summary(
+            class_id=class_id,
+            start_date=start_date,
+            end_date=end_date
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error getting class attendance summary")
+        raise HTTPException(status_code=500, detail=str(e))
     
-    return attendance_service.get_class_attendance_summary(
-        class_id=class_id,
-        start_date=start_date,
-        end_date=end_date
-    )
+    
+@router.get("/sessions", response_model=List[SessionResponse])
+async def get_school_sessions(
+    registration_number: str,
+    attendance_service: AttendanceService = Depends(get_attendance_service),
+    current_user: User = Depends(get_current_teacher)  # Teachers can view sessions
+):
+    """Get all active sessions defined for a school"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        school = await attendance_service.get_school_by_registration(clean_registration_number)
+        
+        if not school:
+            raise HTTPException(status_code=404, detail="School not found")
+            
+        if current_user.school_id != school.id:
+            raise HTTPException(
+                status_code=403, 
+                detail="Not authorized to view sessions for this school"
+            )
+        
+        sessions = await attendance_service.get_school_sessions(school.id)
+        return sessions
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error getting school sessions")
+        raise HTTPException(status_code=500, detail=str(e))    

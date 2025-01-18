@@ -12,18 +12,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration Models
-class InfobipConfig(BaseModel):
-    BASE_URL: str = Field(..., description="Infobip API base URL")
-    API_KEY: str = Field(..., description="Infobip API key")
-    SENDER_ID: str = Field("Youventa", description="Default sender ID")
-    PIN_ATTEMPTS: int = Field(10, description="Number of PIN verification attempts")
-    PIN_TTL: str = Field("15m", description="PIN time to live")
-    VERIFY_PIN_LIMIT: str = Field("1/3s", description="PIN verification rate limit")
-    SEND_PIN_APP_LIMIT: str = Field("100/1d", description="Application-wide PIN sending limit")
-    SEND_PIN_NUMBER_LIMIT: str = Field("10/1d", description="Per phone number PIN sending limit")
+class SMSConfig(BaseModel):
+    """Configuration model for SMS service that handles both Infobip and general settings"""
+    provider: str = Field(..., description="SMS provider name")
+    enabled: bool = Field(..., description="Whether SMS service is enabled")
+    base_url: str = Field(..., description="API base URL")
+    api_key: str = Field(..., description="API key")
+    sender_id: str = Field(..., description="Sender ID")
+    rate_limits: dict = Field(..., description="Rate limiting configuration")
 
-    class Config:
-        env_prefix = "INFOBIP_"
 
 # Message and Response Models
 class SMSMessage(BaseModel):
@@ -49,10 +46,10 @@ class SMSResponse(BaseModel):
 
 # SMS Service Class
 class SMSService:
-    def __init__(self, config: InfobipConfig):
-        self.config = config
+    def __init__(self, config: dict):
+        self.config = SMSConfig(**config)
         self.headers = {
-            'Authorization': f'App {self.config.API_KEY}',
+            'Authorization': f'App {self.config.api_key}',
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         }

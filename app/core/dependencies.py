@@ -10,6 +10,7 @@ from app.models.user import User
 from app.models.school import School
 from app.core.security import verify_token
 from app.schemas.auth.requests import UserInDB
+from app.core.config import get_sms_settings
 from app.services.auth_service import AuthService
 from app.services.registration_service import RegistrationService
 from app.services.email_service import EmailService
@@ -65,9 +66,11 @@ async def get_registration_service(db: AsyncSession = Depends(get_db)) -> Regist
     """Provide RegistrationService instance"""
     return RegistrationService(db)
 
+
 async def get_sms_service() -> SMSService:
     """Provide SMSService instance"""
-    return SMSService()
+    config = get_sms_settings()  
+    return SMSService(config=config)
 
 async def get_email_service() -> EmailService:
     """Provide EmailService instance"""

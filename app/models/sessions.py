@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, Time, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Boolean, Time, Date, ForeignKey, ARRAY
 from sqlalchemy.orm import relationship
 from .base import Base
 
@@ -10,7 +10,8 @@ class Session(Base):
     start_time = Column(Time, nullable=False)  
     end_time = Column(Time, nullable=False)    
     start_date = Column(Date, nullable=False)  
-    end_date = Column(Date, nullable=False)    
+    end_date = Column(Date, nullable=False)   
+    weekdays = Column(ARRAY(String), nullable=False) 
     is_active = Column(Boolean, default=True)  
     description = Column(String, nullable=True)
     school_id = Column(Integer, ForeignKey('schools.id'), nullable=False)

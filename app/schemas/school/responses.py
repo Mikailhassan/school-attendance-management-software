@@ -16,6 +16,16 @@ class SchoolStatus(str, Enum):
     INACTIVE = "inactive"
     SUSPENDED = "suspended"
     PENDING = "pending"
+    
+    
+class Weekday(str, Enum):
+    MONDAY = "MONDAY"
+    TUESDAY = "TUESDAY"
+    WEDNESDAY = "WEDNESDAY"
+    THURSDAY = "THURSDAY"
+    FRIDAY = "FRIDAY"
+    SATURDAY = "SATURDAY"
+    SUNDAY = "SUNDAY"      
 
 class ClassRangeResponse(BaseModel):
     start: str
@@ -65,6 +75,7 @@ class SessionResponse(BaseModel):
     end_time: time
     start_date: date
     end_date: date
+    # weekdays: List[Weekday]
     description: Optional[str]
     is_active: bool
     school_id: int

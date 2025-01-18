@@ -15,7 +15,8 @@ class Student(TenantModel):
     date_of_birth = Column(Date, nullable=False)  
     date_of_joining = Column(Date, nullable=True) 
     address = Column(Text, nullable=True)
-    fingerprint = Column(String, nullable=True)  
+    fingerprint = Column(String, nullable=True)
+    id_number = Column(String, nullable=True)  
     
     # Existing foreign keys
     class_id = Column(Integer, ForeignKey('classes.id'), nullable=False)
@@ -23,10 +24,8 @@ class Student(TenantModel):
     user_id = Column(Integer, ForeignKey('users.id'), unique=True, nullable=False)
     parent_id = Column(Integer, ForeignKey('parents.id'), nullable=False)
     
-    # Emergency contact fields
-    emergency_contact_name = Column(String, nullable=True)
-    emergency_contact_phone = Column(String, nullable=True)
-    emergency_contact_relationship = Column(String, nullable=True)
+    
+    
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
