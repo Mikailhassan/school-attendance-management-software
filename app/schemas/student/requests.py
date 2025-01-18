@@ -33,7 +33,7 @@ class StudentUpdate(BaseModel):
 class StudentRegistrationRequest(BaseModel):
     # Student Information
     name: str = Field(..., description="Full name of the student")
-    admNo: str = Field(..., description="Unique admission number")
+    admission_number: str = Field(..., description="Unique admission number")
     photo: Optional[str] = Field(None, description="Student's photo")
     gender: Optional[str] = Field(None, description="Student's gender")
     fingerprint: Optional[str] = Field(None, description="Student's fingerprint data")
