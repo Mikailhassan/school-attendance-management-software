@@ -775,3 +775,93 @@ async def get_parents(
         logger.error(f"Database error in get_parents: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     
+    
+    
+    
+@router.get("/schools/{registration_number}/parents/{parent_id}")
+async def get_parent_details(
+    registration_number: str,
+    parent_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_active_user)
+):
+    """Get detailed information about a specific parent and their associated students"""
+    try:
+        clean_registration_number = registration_number.strip('{}')
+        
+        # Get parent with associated students and school verification
+        result = await db.execute(
+            select(Parent, School)
+            .join(School, Parent.school_id == School.id)
+            .where(
+                Parent.id == parent_id,
+                School.registration_number == clean_registration_number
+            )
+        )
+        parent_row = result.first()
+        
+        if not parent_row:
+            raise HTTPException(status_code=404, detail="Parent not found")
+            
+        parent, school = parent_row
+        
+        # Get all students associated with this parent
+        students_result = await db.execute(
+            select(Student, Class, Stream)
+            .outerjoin(Class, Student.class_id == Class.id)
+            .outerjoin(Stream, Student.stream_id == Stream.id)
+            .where(Student.parent_id == parent_id)
+        )
+        student_rows = students_result.all()
+        
+        # Get parent user information
+        user_result = await db.execute(
+            select(User)
+            .where(User.id == parent.user_id)
+        )
+        user = user_result.scalar_one_or_none()
+        
+        # Format the response
+        return {
+            "parent": {
+                "id": parent.id,
+                "name": parent.name,
+                "email": parent.email,
+                "phone": parent.phone,
+                "address": getattr(parent, 'address', None),
+                "occupation": getattr(parent, 'occupation', None),
+                "relationship_to_student": getattr(parent, 'relationship_to_student', None),
+                "user_status": {
+                    "is_active": user.is_active if user else None,
+                    "last_login": getattr(user, 'last_login', None) if user else None
+                }
+            },
+            "students": [
+                {
+                    "id": student.id,
+                    "name": student.name,
+                    "admission_number": student.admission_number,
+                    "class": {
+                        "id": class_.id,
+                        "name": class_.name
+                    } if class_ else None,
+                    "stream": {
+                        "id": stream.id,
+                        "name": stream.name
+                    } if stream else None,
+                    "date_of_birth": student.date_of_birth,
+                    "gender": getattr(student, 'gender', None)
+                }
+                for student, class_, stream in student_rows
+            ],
+            "school": {
+                "id": school.id,
+                "name": school.name,
+                "registration_number": school.registration_number
+            }
+        }
+        
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in get_parent_details: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")    
+    

@@ -44,7 +44,7 @@ class StudentRegistrationRequest(BaseModel):
     stream_id: Optional[int] = Field(None, description="ID of the stream")
     
     # Parent/Guardian Information
-    parent_id: int = Field(..., description="ID of the parent/guardian")
+    id_number: int = Field(..., description="ID of the parent/guardian")
     parent_name: str = Field(..., description="Parent's full name")
     parent_phone: str = Field(..., description="Parent's phone number")
     parent_email: EmailStr = Field(..., description="Parent's email address")
