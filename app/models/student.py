@@ -16,7 +16,6 @@ class Student(TenantModel):
     date_of_joining = Column(Date, nullable=True) 
     address = Column(Text, nullable=True)
     fingerprint = Column(String, nullable=True)
-    id_number = Column(String, nullable=True)  
     
     # Existing foreign keys
     class_id = Column(Integer, ForeignKey('classes.id'), nullable=False)

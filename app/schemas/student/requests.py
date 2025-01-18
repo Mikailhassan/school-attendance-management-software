@@ -33,7 +33,7 @@ class StudentUpdate(BaseModel):
 class StudentRegistrationRequest(BaseModel):
     # Student Information
     name: str = Field(..., description="Full name of the student")
-    admission_number: str = Field(..., description="Unique admission number")
+    admission_number: int= Field(..., description="Unique admission number")
     photo: Optional[str] = Field(None, description="Student's photo")
     gender: Optional[str] = Field(None, description="Student's gender")
     fingerprint: Optional[str] = Field(None, description="Student's fingerprint data")
@@ -44,11 +44,11 @@ class StudentRegistrationRequest(BaseModel):
     stream_id: Optional[int] = Field(None, description="ID of the stream")
     
     # Parent/Guardian Information
-    id_number: int = Field(..., description="ID of the parent/guardian")
+    parent_id_number: int = Field(..., description="ID of the parent/guardian")
     parent_name: str = Field(..., description="Parent's full name")
     parent_phone: str = Field(..., description="Parent's phone number")
     parent_email: EmailStr = Field(..., description="Parent's email address")
-    relationship: str = Field(..., description="Relationship with the student")
+    relation_type: str = Field(..., description="Relationship with the student")
 
     class Config:
         from_attributes = True

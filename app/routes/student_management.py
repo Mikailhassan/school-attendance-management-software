@@ -7,7 +7,7 @@ from fastapi.params import Query
 from datetime import date,datetime
 from app.schemas.enums import UserRole
 from app.services.email_service import EmailService
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy.sql import and_
 import re
 import math
@@ -52,137 +52,160 @@ router = APIRouter(
     tags=["student_management"]
 )
 
-
 @router.post("/schools/{registration_number}/students")
 async def register_student(
     registration_number: str,
     student_data: StudentRegistrationRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: UserInDB = Depends(get_current_school_admin)
 ):
     """Register a new student with class and stream assignment"""
-    clean_registration_number = registration_number.strip('{}')
     
-    # Get school
-    result = await db.execute(
-        select(School).where(School.registration_number == clean_registration_number)
-    )
-    school = result.scalar_one_or_none()
-    
-    if not school:
-        raise HTTPException(status_code=404, detail="School not found")
-    
-    # Verify stream exists and get its ID
-    result = await db.execute(
-        select(Stream)
-        .join(Class)
-        .where(
-            Stream.school_id == school.id,
-            Class.id == student_data.class_id,
-            Stream.name == student_data.stream_name
-        )
-    )
-    stream = result.scalar_one_or_none()
-
-    if not stream:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Stream not found for class_id {student_data.class_id} and stream {student_data.stream_name}"
-        )
-
-    # Create student user account with optional password
-    student_user = User(
-        name=student_data.name,
-        email=student_data.email,
-        password_hash=get_password_hash(student_data.password) if student_data.password else None,
-        role=UserRole.STUDENT,
-        school_id=school.id,
-        is_active=True
-    )
-    db.add(student_user)
-    await db.flush()
-
-    # Generate temporary password for parent account
-    parent_temp_password = generate_temporary_password()
-    
-    # Create parent user account
-    parent_user = User(
-        name=student_data.parent_name, 
-        email=student_data.parent_email,
-        password_hash=get_password_hash(parent_temp_password),
-        role=UserRole.PARENT,
-        school_id=school.id,
-        is_active=True
-    )
-    db.add(parent_user)
-    await db.flush()
-    
-    # Create parent record
-    parent = Parent(
-        name=student_data.parent_name,
-        user_id=parent_user.id,
-        school_id=school.id,
-        phone=student_data.parent_phone,
-        email=student_data.parent_email
-    )
-    db.add(parent)
-    await db.flush()
-    
-    # Create student profile with all available fields
-    student = Student(
-        name=student_data.name,
-        admission_number=student_data.admission_number,
-        class_id=student_data.class_id,
-        stream_id=stream.id,
-        user_id=student_user.id,
-        parent_id=parent.id,
-        date_of_birth=student_data.date_of_birth,
-        school_id=school.id,
-        gender=student_data.gender,
-        phone=student_data.phone,
-        address=student_data.address,
-        emergency_contact_name=student_data.emergency_contact_name,
-        emergency_contact_phone=student_data.emergency_contact_phone,
-        emergency_contact_relationship=student_data.emergency_contact_relationship
-    )
-    db.add(student)
-    
-    try:
-        await db.commit()
-        await db.refresh(student)
-        
-        # Send email to parent with temporary password
-        background_tasks.add_task(
-            send_email,
-            recipient_email=parent_user.email,
-            subject="School Management System - Parent Account Created",
-            body=f"""
-            Dear {student_data.parent_name},
+    async with db.begin():
+        try:
+            # Get school
+            result = await db.execute(
+                select(School).where(School.registration_number == registration_number.strip('{}'))
+            )
+            school = result.scalar_one_or_none()
             
-            A parent account has been created for you in the School Management System.
-            Your temporary password is: {parent_temp_password}
+            if not school:
+                raise HTTPException(status_code=404, detail="School not found")
             
-            Please change your password after first login.
+            # Verify stream exists
+            if student_data.stream_id:
+                result = await db.execute(
+                    select(Stream)
+                    .where(
+                        Stream.id == student_data.stream_id,
+                        Stream.school_id == school.id,
+                        Stream.class_id == student_data.class_id
+                    )
+                )
+                if not result.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Stream not found for class_id {student_data.class_id} and stream_id {student_data.stream_id}"
+                    )
+
+            # Generate student email and passwords
+            student_email = f"student_{student_data.admission_number}@{school.registration_number}.edu"
+            parent_temp_password = generate_temporary_password()
+            student_temp_password = generate_temporary_password()
             
-            Best regards,
-            School Management Team
-            """
-        )
-        
-        return {
-            "message": "Student registered successfully",
-            "student_id": student.id,
-            "admission_number": student.admission_number
-        }
-        
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Error creating student: {str(e)}"
-        )
-        
+            # 1. Create student user first
+            student_user = User(
+                name=student_data.name,
+                email=student_email,
+                password_hash=get_password_hash(student_temp_password),
+                role=UserRole.STUDENT,
+                school_id=school.id,
+                is_active=True,
+                date_of_birth=student_data.date_of_birth
+            )
+            db.add(student_user)
+            await db.flush()
+            
+            # 2. Create parent user
+            parent_user = User(
+                name=student_data.parent_name,
+                email=student_data.parent_email,
+                password_hash=get_password_hash(parent_temp_password),
+                role=UserRole.PARENT,
+                school_id=school.id,
+                is_active=True,
+                phone=student_data.parent_phone
+            )
+            db.add(parent_user)
+            await db.flush()
+            
+            # 3. Create parent record
+            parent = Parent(
+                name=student_data.parent_name,
+                user_id=parent_user.id,
+                school_id=school.id,
+                phone=student_data.parent_phone,
+                email=student_data.parent_email,
+                id_number=str(student_data.parent_id_number),
+                relation_type=student_data.relation_type
+            )
+            db.add(parent)
+            await db.flush()
+            
+            # 4. Create student record
+            student = Student(
+                name=student_data.name,
+                admission_number=str(student_data.admission_number),
+                class_id=student_data.class_id,
+                stream_id=student_data.stream_id,
+                parent_id=parent.id,
+                user_id=student_user.id,
+                date_of_birth=student_data.date_of_birth,
+                date_of_joining=student_data.date_of_joining,
+                school_id=school.id,
+                gender=student_data.gender,
+                address=student_data.address,
+                photo=student_data.photo,
+                fingerprint=student_data.fingerprint
+            )
+            db.add(student)
+            await db.flush()
+
+            # Schedule email sending tasks
+            # background_tasks.add_task(
+            #     send_email,
+            #     recipient_email=parent_user.email,
+            #     subject="School Management System - Parent Account Created",
+            #     body=f"""
+            #     Dear {student_data.parent_name},
+                
+            #     A parent account has been created for you in the School Management System.
+            #     Your temporary password is: {parent_temp_password}
+                
+            #     Please change your password after first login.
+                
+            #     Best regards,
+            #     School Management Team
+            #     """
+            # )
+
+            # background_tasks.add_task(
+            #     send_email,
+            #     recipient_email=student_email,
+            #     subject="School Management System - Student Account Created",
+            #     body=f"""
+            #     Dear {student_data.name},
+                
+            #     Your student account has been created in the School Management System.
+            #     Your email: {student_email}
+            #     Your temporary password is: {student_temp_password}
+                
+            #     Please change your password after first login.
+                
+            #     Best regards,
+            #     School Management Team
+            #     """
+            # )
+            
+            return {
+                "message": "Student registered successfully",
+                "student_id": student.id,
+                # "student_email": student_email,
+                "admission_number": student.admission_number,
+                "parent_id": parent.id
+            }
+            
+        except IntegrityError as e:
+            raise HTTPException(
+                status_code=400,
+                detail="Database integrity error. This could be due to duplicate admission number or email."
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error creating student: {str(e)}"
+            )
 @router.get("/schools/{registration_number}/students", response_model=PaginatedStudentResponse)
 async def get_students(
     registration_number: str,

@@ -13,6 +13,8 @@ class Parent(TenantModel):
     phone = Column(String, nullable=False)
     email = Column(String, unique=True, nullable=False)
     address = Column(String, nullable=True)
+    id_number = Column(String, nullable=True)  
+    relation_type = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
