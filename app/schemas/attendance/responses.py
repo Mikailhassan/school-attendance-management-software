@@ -40,9 +40,9 @@ class AttendanceAnalytics(BaseModel):
     absent_count: int
     late_count: int
     attendance_rate: float
-    stream_comparison: Dict[str, float]  # Comparison between streams
-    class_comparison: Dict[str, Dict[str, float]]  # Nested comparison by class and stream
-    trend_data: Dict[str, Any]
+    # stream_comparison: Dict[str, float]  # Comparison between streams
+    # class_comparison: Dict[str, Dict[str, float]]  # Nested comparison by class and stream
+    # trend_data: Dict[str, Any]
 
     class Config:
         from_attributes = True

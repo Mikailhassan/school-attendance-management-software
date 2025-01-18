@@ -32,16 +32,17 @@ class StudentResponse(BaseModel):
     date_of_birth: date
     date_of_joining: Optional[date] = None
     address: Optional[str] = None
+    relation_type:Optional[str] = None
     class_id: int
-    # parent_id: int
+    parent_id: int
     stream_id: Optional[int]
     school_id: int
     
     # Make parent fields optional with defaults
-    parent_id: Optional[int] = None
-    # parent_name: Optional[str] = None  # Changed to Optional
-    # parent_phone: Optional[str] = None  # Changed to Optional
-    # parent_email: Optional[EmailStr] = None  # Changed to Optional
+    parent_id_number: Optional[int] = None
+    parent_name: Optional[str] = None  # Changed to Optional
+    parent_phone: Optional[str] = None  # Changed to Optional
+    parent_email: Optional[EmailStr] = None  # Changed to Optional
 
     class Config:
         from_attributes = True

@@ -1,9 +1,12 @@
 from datetime import datetime, date, time
-from typing import List, Optional, Dict
-from sqlalchemy import and_, select
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session as AsyncSession
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func, case, and_
+from app.models.attendance_base import AttendanceBase
+from app.models.student_attendance import StudentAttendance
+from app.models.sessions import Session as SessionModel
+from app.schemas.attendance.responses import StudentAttendanceRecord, AttendanceAnalytics
 from types import SimpleNamespace
 from app.models import Student, Class, Stream 
 
@@ -371,3 +374,114 @@ class AttendanceService:
         except Exception as e:
             logger.error(f"Failed to send absence notification: {str(e)}")
             # notification failure shouldn't block attendance marking
+            
+            
+async def get_student_attendance_summary(db: Session, student_id: int) -> Dict[str, Any]:
+        """
+        Calculate attendance summary statistics for a specific student.
+        
+        Args:
+            db (Session): Database session
+            student_id (int): ID of the student
+            
+        Returns:
+            Dict containing attendance statistics and recent attendance records
+        """
+        # Get current academic year's start date (assuming it starts in January)
+        current_year = datetime.now().year
+        academic_year_start = datetime(current_year, 1, 1)
+        
+        # Get total attendance counts with session information
+        attendance_counts = await db.execute(
+            select(
+                func.count().label('total_sessions'),
+                func.sum(case(
+                    (StudentAttendance.status == 'Present', 1),
+                    else_=0
+                )).label('total_present'),
+                func.sum(case(
+                    (StudentAttendance.status == 'Absent', 1),
+                    else_=0
+                )).label('total_absent'),
+                func.sum(case(
+                    (StudentAttendance.status == 'Late', 1),
+                    else_=0
+                )).label('total_late')
+            )
+            .select_from(StudentAttendance)
+            .join(SessionModel, StudentAttendance.session_id == SessionModel.id)
+            .where(
+                and_(
+                    StudentAttendance.student_id == student_id,
+                    StudentAttendance.date >= academic_year_start
+                )
+            )
+        )
+        
+        counts = attendance_counts.first()
+        
+        # Get recent attendance records with class and stream information
+        recent_attendance = await db.execute(
+            select(
+                StudentAttendance,
+                SessionModel
+            )
+            .join(SessionModel, StudentAttendance.session_id == SessionModel.id)
+            .where(StudentAttendance.student_id == student_id)
+            .order_by(StudentAttendance.date.desc())
+            .limit(5)
+        )
+        
+        recent_records = recent_attendance.all()
+        
+        # Calculate attendance statistics
+        total_sessions = counts.total_sessions or 0
+        total_present = counts.total_present or 0
+        total_absent = counts.total_absent or 0
+        total_late = counts.total_late or 0
+        attendance_rate = (total_present / total_sessions * 100) if total_sessions > 0 else 0
+        
+        # Format recent attendance records according to schema
+        formatted_records = [
+            StudentAttendanceRecord(
+                date=record.StudentAttendance.date,
+                class_name=record.SessionModel.class_name if record.SessionModel else "N/A",
+                stream_name=record.SessionModel.stream_name if record.SessionModel else "N/A",
+                status=record.StudentAttendance.status,
+                check_in_time=record.StudentAttendance.check_in_time,
+                check_out_time=record.StudentAttendance.check_out_time,
+                remarks=record.StudentAttendance.remarks
+            ).model_dump()
+            for record in recent_records
+        ]
+        
+        # Get attendance analytics
+        # stream_comparison = await get_stream_comparison(db, student_id)
+        # class_comparison = await get_class_comparison(db, student_id)
+        # trend_data = await get_attendance_trend(db, student_id)
+        
+        analytics = AttendanceAnalytics(
+            total_students=1,  # Since this is for a single student
+            present_count=total_present,
+            absent_count=total_absent,
+            late_count=total_late,
+            attendance_rate=round(attendance_rate, 2),
+            # stream_comparison=stream_comparison,
+            # class_comparison=class_comparison,
+            # trend_data=trend_data
+        )
+        
+        return {
+            "summary": {
+                "total_sessions": total_sessions,
+                "total_present": total_present,
+                "total_absent": total_absent,
+                "total_late": total_late,
+                "attendance_rate": round(attendance_rate, 2),
+                "is_approved": all(record.StudentAttendance.is_approved for record in recent_records),
+            },
+            "recent_attendance": formatted_records,
+            "analytics": analytics.model_dump()
+        }        
+                
+                

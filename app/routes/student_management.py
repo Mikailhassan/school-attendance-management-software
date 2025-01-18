@@ -7,8 +7,9 @@ from fastapi.params import Query
 from datetime import date,datetime
 from app.schemas.enums import UserRole
 from app.services.email_service import EmailService
+from app.services.attendance_service import get_student_attendance_summary
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
-from sqlalchemy.sql import and_
+from sqlalchemy.sql import and_, func
 import re
 import math
 from app.services.class_service import ClassService
@@ -341,7 +342,7 @@ async def get_filter_options(
         "streams": [{"id": s.id, "name": s.name} for s in streams]
     }
 
-@router.get("/schools/{registration_number}/students/{student_id}")
+@router.get("/schools/{registration_number}/students/{student_id}", response_model=StudentResponse)
 async def get_student_details(
     registration_number: str,
     student_id: int,
@@ -368,44 +369,36 @@ async def get_student_details(
     row = result.unique().first()
     if not row:
         raise HTTPException(status_code=404, detail="Student not found")
-        
+    
     student, parent, class_, stream = row
     
     # Get attendance summary
     attendance_summary = await get_student_attendance_summary(db, student.id)
     
+    return StudentResponse(
+        id=student.id,
+        name=student.name,
+        admission_number=student.admission_number,
+        photo=student.photo,
+        gender=student.gender.value if hasattr(student.gender, 'value') else student.gender,
+        fingerprint=student.fingerprint,
+        date_of_birth=student.date_of_birth,
+        date_of_joining=student.date_of_joining,
+        address=student.address,
+        relation_type=parent.relation_type if parent else None,  # Fixed field name
+        class_id=class_.id if class_ else None,
+        parent_id=parent.id if parent else None,
+        stream_id=stream.id if stream else None,
+        school_id=student.school_id,
+        parent_id_number=parent.id_number if parent else None,
+        parent_name=parent.name if parent else None,
+        parent_phone=parent.phone if parent else None,
+        parent_email=parent.email if parent else None
+    )
+    
+    # Return response with both student data and attendance summary
     return {
-        "student": {
-            "id": student.id,
-            "name": student.name,
-            "admission_number": student.admission_number,
-            "gender": student.gender.value if hasattr(student.gender, 'value') else student.gender,
-            "date_of_birth": student.date_of_birth,
-            "email": student.email,
-            "phone": student.phone,
-            "address": student.address,
-            "class": {
-                "id": class_.id,
-                "name": class_.name
-            } if class_ else None,
-            "stream": {
-                "id": stream.id,
-                "name": stream.name
-            } if stream else None,
-            "emergency_contact": {
-                "name": student.emergency_contact_name,
-                "phone": student.emergency_contact_phone,
-                "relationship": student.emergency_contact_relationship
-            } if student.emergency_contact_name else None
-        },
-        "parent": {
-            "name": parent.name,
-            "email": parent.email,
-            "phone": parent.phone,
-            "occupation": parent.occupation,
-            "address": parent.address,
-            "relationship_to_student": parent.relationship_to_student
-        } if parent else None,
+        "student": student_response,
         "attendance_summary": attendance_summary
     }
 
