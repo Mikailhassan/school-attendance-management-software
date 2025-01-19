@@ -394,6 +394,9 @@ async def get_student_details(
         parent_name=parent.name if parent else None,
         parent_phone=parent.phone if parent else None,
         parent_email=parent.email if parent else None
+        
+        
+       
     )
     
     # Return response with both student data and attendance summary

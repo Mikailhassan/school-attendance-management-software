@@ -180,7 +180,7 @@ class SessionCreateRequest(BaseModel):
     end_date: date
     start_time: time
     end_time: time
-    weekdays: List[Weekday]
+    weekdays: Optional[List[Weekday]]
     description: str | None = None
 
     @model_validator(mode='after')

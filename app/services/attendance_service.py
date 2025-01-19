@@ -5,10 +5,11 @@ from fastapi import HTTPException, status
 from sqlalchemy import select, func, case, and_
 from app.models.attendance_base import AttendanceBase
 from app.models.student_attendance import StudentAttendance
+from app.schemas.attendance.info import ClassInfo, StreamInfo
 from app.models.sessions import Session as SessionModel
 from app.schemas.attendance.responses import StudentAttendanceRecord, AttendanceAnalytics
 from types import SimpleNamespace
-from app.models import Student, Class, Stream 
+from app.models import Student, Class, Stream, AttendanceBase
 
 from app.models import (
     Student, Session, School, StudentAttendance,
@@ -322,6 +323,59 @@ class AttendanceService:
                     raise e
                 
         return marked_attendance
+    
+    
+    async def get_attendance_classes(self, school_id: int) -> List[ClassInfo]:
+        """Get classes available for attendance marking"""
+        query = select(Class).where(Class.school_id == school_id)
+        result = await self.db.execute(query)
+        classes = result.scalars().all()
+        return [ClassInfo.from_orm(class_) for class_ in classes]
+
+    async def get_attendance_streams(self, school_id: int, class_id: int) -> List[StreamInfo]:
+        """Get streams in a class for attendance marking"""
+        query = select(Stream).where(
+            and_(
+                Stream.school_id == school_id,
+                Stream.class_id == class_id
+            )
+        )
+        result = await self.db.execute(query)
+        streams = result.scalars().all()
+        return [StreamInfo.from_orm(stream) for stream in streams]
+
+    async def get_attendance_students(
+        self,
+        school_id: int,
+        class_id: int,
+        stream_id: Optional[int] = None,
+        date: Optional[date] = None,
+        status: Optional[str] = None
+    ) -> List[StudentInfo]:
+        """Get students for attendance marking with optional filters"""
+        query = select(Student).where(
+            and_(
+                Student.school_id == school_id,
+                Student.class_id == class_id
+            )
+        )
+        
+        if stream_id:
+            query = query.where(Student.stream_id == stream_id)
+            
+        if date and status:
+            # Join with attendance records if filtering by date/status
+            query = query.outerjoin(
+                Attendance,
+                and_(
+                    Attendance.student_id == Student.id,
+                    Attendance.date == date
+                )
+            ).where(Attendance.status == status)
+            
+        result = await self.db.execute(query)
+        students = result.scalars().all()
+        return [StudentInfo.from_orm(student) for student in students]
 
     async def get_student_attendance_records(
         self,

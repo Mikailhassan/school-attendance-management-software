@@ -14,7 +14,7 @@ class StreamInfo(BaseModel):
 
 class ClassInfo(BaseModel):
     id: int
-    name: str  # e.g., "Form 1", "Class 6", "Grade 8"
+    name: str  
     school_id: int
     total_students: int
     streams: List[StreamInfo]
