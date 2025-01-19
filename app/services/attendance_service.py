@@ -478,29 +478,27 @@ async def get_student_attendance_summary(db: Session, student_id: int) -> Dict[s
         recent_attendance = await db.execute(
             select(
                 StudentAttendance,
-                SessionModel
+                SessionModel,
+                Student.student_class.name.label('class_name'),
+                Student.stream.name.label('stream_name')
             )
             .join(SessionModel, StudentAttendance.session_id == SessionModel.id)
+            .join(Student, StudentAttendance.student_id == Student.id)
+            .outerjoin(Student.student_class) 
+            .outerjoin(Student.stream)         
             .where(StudentAttendance.student_id == student_id)
             .order_by(StudentAttendance.date.desc())
             .limit(5)
         )
-        
+
         recent_records = recent_attendance.all()
-        
-        # Calculate attendance statistics
-        total_sessions = counts.total_sessions or 0
-        total_present = counts.total_present or 0
-        total_absent = counts.total_absent or 0
-        total_late = counts.total_late or 0
-        attendance_rate = (total_present / total_sessions * 100) if total_sessions > 0 else 0
-        
-        # Format recent attendance records according to schema
+
+        # Update the formatting to use the class and stream names
         formatted_records = [
             StudentAttendanceRecord(
                 date=record.StudentAttendance.date,
-                class_name=record.SessionModel.class_name if record.SessionModel else "N/A",
-                stream_name=record.SessionModel.stream_name if record.SessionModel else "N/A",
+                class_name=record.class_name if record.class_name else "N/A",
+                stream_name=record.stream_name if record.stream_name else "N/A",
                 status=record.StudentAttendance.status,
                 check_in_time=record.StudentAttendance.check_in_time,
                 check_out_time=record.StudentAttendance.check_out_time,
@@ -508,7 +506,6 @@ async def get_student_attendance_summary(db: Session, student_id: int) -> Dict[s
             ).model_dump()
             for record in recent_records
         ]
-        
         # Get attendance analytics
         # stream_comparison = await get_stream_comparison(db, student_id)
         # class_comparison = await get_class_comparison(db, student_id)

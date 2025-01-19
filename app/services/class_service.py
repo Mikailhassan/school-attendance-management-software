@@ -199,6 +199,22 @@ class ClassService:
                 for stream in class_obj.streams
             ]
         }
+        
+    async def list_classes_with_streams(self, school_id: int) -> List[Class]:
+        """
+        Fetch classes with their related streams using SQLAlchemy ORM
+        """
+        query = (
+            select(Class)
+            .options(joinedload(Class.streams))
+            .where(Class.school_id == school_id)
+        )
+        
+        result = await self.db.execute(query)
+        classes = result.unique().scalars().all()
+        return classes    
+        
+     
 
     async def list_classes(
         self,

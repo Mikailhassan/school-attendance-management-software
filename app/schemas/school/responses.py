@@ -71,6 +71,34 @@ class SchoolListResponse(BaseModel):
     size: int
     items: List[SchoolResponse]
     
+     
+    class Config:
+        from_attributes = True    
+    
+    
+class StreamResponse(BaseModel):
+    id: int
+    name: str
+    class_id: int
+    school_id: int    
+    
+    
+     
+    class Config:
+        from_attributes = True    
+    
+    
+class ClassWithStreamsResponse(BaseModel):
+    id: int
+    name: str
+    school_id: int
+    streams: List[StreamResponse] = []    
+    
+    
+     
+    class Config:
+        from_attributes = True    
+    
     
     
 class SessionResponse(BaseModel):

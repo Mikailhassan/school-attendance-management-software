@@ -42,6 +42,9 @@ from app.schemas.school.responses import (
     ClassStatisticsResponse,
     ErrorResponse,
     SchoolAdminResponse,
+    ClassWithStreamsResponse,
+    ClassDetailsResponse,
+    ClassListResponse
 )
 from app.schemas.user import UserResponse
 
@@ -288,39 +291,42 @@ async def create_class(
 
 
 @router.get(
-    "/schools/{registration_number}/classes/{class_id}",
-    response_model=ClassDetailsResponse,
+    "/schools/{registration_number}/classes",
+    response_model=List[ClassWithStreamsResponse],
     responses={
-        404: {"model": ErrorResponse, "description": "Class not found"},
-        403: {"model": ErrorResponse, "description": "Not authorized to access this class"},
+        404: {"model": ErrorResponse, "description": "School not found"},
+        403: {"model": ErrorResponse, "description": "Not authorized to access this school"},
         500: {"model": ErrorResponse, "description": "Internal server error"}
     }
 )
-async def get_class_details(
+async def list_classes(
     registration_number: str,
-    class_id: int,
     service: ClassService = Depends(get_class_service),
     current_user: UserInDB = Depends(get_current_school_admin)
-) -> dict:  # Remove return type annotation that was causing the error
+) -> List[ClassWithStreamsResponse]:
     try:
         # Get school and verify access
         school = await service.get_school_by_registration(registration_number)
+        if not school:
+            raise ResourceNotFoundException(f"School {registration_number} not found")
+            
         if current_user.school_id != school.id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to access this class"
+                detail="Not authorized to access this school's classes"
             )
         
-        # Get class details
-        class_data = await service.get_class(class_id, school.id)
+        # Get classes with streams
+        classes = await service.list_classes_with_streams(school.id)
         
-        # Convert to Pydantic model
-        response_data = {
-            "id": class_data["id"],
-            "name": class_data["name"],
-            "streams": [StreamResponse(**stream) for stream in class_data["streams"]]
-        }
-        return response_data
+        try:
+            return [ClassWithStreamsResponse.from_orm(class_obj) for class_obj in classes]
+        except Exception as e:
+            # Add specific error handling for serialization errors
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error serializing class data: {str(e)}"
+            )
         
     except ResourceNotFoundException as e:
         raise HTTPException(
@@ -330,12 +336,13 @@ async def get_class_details(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving class details: {str(e)}"
+            detail=f"Error listing classes: {str(e)}"
         )
+
 
 @router.get(
     "/schools/{registration_number}/classes",
-    response_model=List[ClassResponse],
+    response_model=List[ClassWithStreamsResponse],
     responses={
         404: {"model": ErrorResponse, "description": "School not found"},
         403: {"model": ErrorResponse, "description": "Not authorized to access this school"},
@@ -344,10 +351,9 @@ async def get_class_details(
 )
 async def list_classes(
     registration_number: str,
-    include_streams: bool = Query(False, description="Include related streams data"),
     service: ClassService = Depends(get_class_service),
     current_user: UserInDB = Depends(get_current_school_admin)
-) -> List[dict]:  # Remove return type annotation that was causing the error
+) -> List[ClassWithStreamsResponse]:
     try:
         # Get school and verify access
         school = await service.get_school_by_registration(registration_number)
@@ -357,19 +363,10 @@ async def list_classes(
                 detail="Not authorized to access this school's classes"
             )
         
-        # Get classes
-        classes_data = await service.list_classes(registration_number, include_streams)
+        # Get classes with streams in a single query
+        classes_data = await service.list_classes_with_streams(registration_number)
         
-        # Convert to response format
-        return [
-            {
-                "id": class_data["id"],
-                "name": class_data["name"],
-                "school_id": class_data["school_id"],
-                "streams": [StreamResponse(**stream) for stream in class_data["streams"]] if include_streams else []
-            }
-            for class_data in classes_data
-        ]
+        return [ClassWithStreamsResponse(**class_data) for class_data in classes_data]
         
     except ResourceNotFoundException as e:
         raise HTTPException(
