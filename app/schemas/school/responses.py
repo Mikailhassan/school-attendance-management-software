@@ -58,7 +58,12 @@ class SchoolResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
-    admin: SchoolAdminResponse
+    admin: Optional[SchoolAdminResponse] = None
+    
+    
+    class Config:
+        from_attributes = True    
+    
 
 class SchoolListResponse(BaseModel):
     total: int

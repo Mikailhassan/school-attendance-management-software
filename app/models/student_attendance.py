@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, ForeignKey
+from sqlalchemy import Column, Integer, ForeignKey, DateTime, String
 from sqlalchemy.orm import relationship, declared_attr
 from .attendance_base import AttendanceBase
 
@@ -8,27 +8,19 @@ class StudentAttendance(AttendanceBase):
     """
     __tablename__ = "student_attendances"
 
-    @declared_attr
-    def id(cls):
-        return Column(Integer, primary_key=True)
-
-    @declared_attr
-    def student_id(cls):
-        return Column(Integer, ForeignKey("students.id"), nullable=False)
-
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    class_id = Column(Integer, ForeignKey("classes.id"), nullable=False)
+    stream_id = Column(Integer, ForeignKey("streams.id"), nullable=False)
+    time = Column(DateTime, nullable=False)
+    timestamp = Column(DateTime, nullable=False)
 
     # Relationships
+    student = relationship("Student", back_populates="attendances")
+    
     @declared_attr
-    def student(cls):
-        return relationship("Student", back_populates="attendances", lazy="joined")
-
-    @declared_attr
-    def user(cls):
-        return relationship("User", back_populates="student_attendances", lazy="joined")
-
-    @declared_attr
-    def session(cls):  # Added session relationship
-        return relationship("Session", back_populates="student_attendances", lazy="joined")
-
+    def session(cls):
+        return relationship("Session", back_populates="student_attendances")
+    
     def __repr__(self):
-        return f"<StudentAttendance(student_id={self.student_id})>"
+        return f"<StudentAttendance(id={self.id})>"

@@ -15,19 +15,9 @@ class AttendanceBase(TenantModel):
 
     @declared_attr
     def status(cls):
-        return Column(String, nullable=False)  # e.g., 'Present', 'Absent', 'Late'
+        return Column(String, nullable=False)
 
-    @declared_attr
-    def check_in_time(cls):
-        return Column(DateTime(timezone=True), nullable=True)
 
-    @declared_attr
-    def check_out_time(cls):
-        return Column(DateTime(timezone=True), nullable=True)
-
-    @declared_attr
-    def is_approved(cls):
-        return Column(Boolean, default=False)
 
     @declared_attr
     def remarks(cls):

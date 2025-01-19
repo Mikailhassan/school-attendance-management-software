@@ -76,9 +76,11 @@ async def get_email_service() -> EmailService:
     """Provide EmailService instance"""
     return EmailService()
 
-async def get_school_service(db: AsyncSession = Depends(get_db)) -> SchoolService:
-    """Provide SchoolService instance"""
-    return SchoolService(db)
+async def get_school_service(
+    db: AsyncSession = Depends(get_db),
+    email_service: EmailService = Depends(get_email_service)  
+) -> SchoolService:
+    return SchoolService(db, email_service)
 
 async def get_class_service(db: AsyncSession = Depends(get_db)) -> ClassService:
     """Provide ClassService instance"""

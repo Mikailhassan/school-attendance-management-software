@@ -164,193 +164,69 @@ async def create_school(
             detail="Error creating school"
         )
 
-@router.get("/schools/{registration_number}")
-async def get_school_details(
-    registration_number: str,
-    db: Session = Depends(get_db),
-    current_user: UserInDB = Depends(get_current_school_admin)
-):
-    """Get detailed information about a specific school"""
-    clean_registration_number = registration_number.strip('{}')
-    
-    school = await db.execute(
-        select(School)
-        .where(School.registration_number == clean_registration_number)
-        .options(
-            joinedload(School.classes),
-            joinedload(School.sessions)
-        )
-    )
-    school = school.scalar_one_or_none()
-    
-    if not school:
-        raise HTTPException(status_code=404, detail="School not found")
-    
-    if current_user.role != "super_admin" and current_user.school.registration_number != clean_registration_number:
-        raise HTTPException(status_code=403, detail="Not authorized to access this school")
-    
-    return school
-
-
 @router.get(
-    "/schools/{school_id}",
+    "/schools/{registration_number}",
     response_model=SchoolResponse,
     responses={
-        404: {"description": "School not found"},
-        500: {"description": "Database error"}
+        404: {"model": ErrorResponse, "description": "School not found"},
+        403: {"model": ErrorResponse, "description": "Not authorized"},
+        500: {"model": ErrorResponse, "description": "Internal server error"}
     }
 )
-async def get_school(
-    school_id: int,
-    school_service: SchoolService = Depends(get_school_service),
-    current_user: User = Depends(get_current_user)
+async def get_school_details(
+    registration_number: str,
+    school_service: SchoolService = Depends(get_school_service),  # Using the fixed dependency
+    current_user: UserInDB = Depends(get_current_school_admin)
 ) -> SchoolResponse:
-    """Get school endpoint with proper error handling"""
-    logger.info(f"Requesting school {school_id} for user {current_user.id}")
-    
     try:
-        school = await school_service.get_school(school_id)
-        return school
-    except SchoolNotFoundException as e:
+        school = await school_service.get_school_by_registration(registration_number)
+        
+        # Check authorization
+        if current_user.role != "super_admin" and current_user.school.registration_number != registration_number:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this school"
+            )
+        
+        return SchoolResponse.from_orm(school)
+        
+    except ResourceNotFoundException as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e)
         )
-    except DatabaseException as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-@router.get("/debug/test-db")
-async def test_db(db = Depends(get_db)):
-    async with db.session() as session:
-        # Test basic connection
-        result = await session.execute(text("SELECT 1"))
-        basic_test = result.scalar()
-        
-        # Test schools table
-        result = await session.execute(
-            text("SELECT id, name FROM schools WHERE id = :school_id"),
-            {"school_id": 23}
-        )
-        school = result.first()
-        
-        return {
-            "basic_test": basic_test,
-            "school": school._asdict() if school else None
-        }
-        
-@router.get("/schools/profile", response_model=SchoolResponse)
-async def get_school_profile(
-    db: AsyncSession = Depends(get_db),
-    current_user: UserInDB = Depends(get_current_school_admin)
-):
-    """
-    Get the profile of the currently authenticated school admin's school.
-    This endpoint allows school admins to view their own school's details.
-    """
-    try:
-        # Get school with related data using the current user's school_id
-        query = (
-            select(School)
-            .where(School.id == current_user.school_id)
-            .options(
-                joinedload(School.classes),
-                joinedload(School.sessions),
-                joinedload(School.classes).joinedload(Class.streams),
-                joinedload(School.admins)
-            )
-        )
-        
-        result = await db.execute(query)
-        school = result.unique().scalar_one_or_none()
-        
-        if not school:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="School profile not found"
-            )
-            
-        # Add any computed fields or additional data
-        response_data = SchoolResponse(
-            id=school.id,
-            name=school.name,
-            registration_number=school.registration_number,
-            email=school.email,
-            phone=school.phone,
-            address=school.address,
-            school_type=school.school_type,
-            website=school.website,
-            county=school.county,
-            class_system=school.class_system,
-            class_range=school.class_range,
-            postal_code=school.postal_code,
-            extra_info=school.extra_info,
-            status=school.status,
-            is_active=school.is_active,
-            created_at=school.created_at,
-            updated_at=school.updated_at,
-            # Include summary statistics
-            total_students=len([student for class_ in school.classes 
-                              for stream in class_.streams 
-                              for student in stream.students]) if school.classes else 0,
-            total_classes=len(school.classes) if school.classes else 0,
-            total_streams=sum(len(class_.streams) for class_ in school.classes) if school.classes else 0,
-            current_session=next((session for session in school.sessions 
-                                if session.is_current), None) if school.sessions else None
-        )
-        
-        return response_data
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error retrieving school profile: {str(e)}"
-        )
-        
-async def get_school_or_404(db: Session, registration_number: str):
-    """Utility function to get school or raise 404"""
-    try:
-        school = await db.scalar(
-            select(School)
-            .where(School.registration_number == registration_number.strip('{}'))
-        )
-        if not school:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"School with registration number {registration_number} not found"
-            )
-        return school
-    except SQLAlchemyError as e:
-        logger.error(f"Database error while fetching school: {str(e)}")
+        logger.error(f"Error fetching school: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error while fetching school"
         )
         
-
-# Optional: Add an endpoint for updating the school profile
-@router.patch("/schools/profile", response_model=SchoolResponse)
-async def update_school_profile(
-    update_data: SchoolUpdateRequest,
+        
+@router.get(
+    "/schools/{registration_number}",
+    response_model=SchoolResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "School not found"},
+        403: {"model": ErrorResponse, "description": "Not authorized"},
+        500: {"model": ErrorResponse, "description": "Internal server error"}
+    }
+)
+async def get_school_details(
+    registration_number: str,
     db: AsyncSession = Depends(get_db),
     current_user: UserInDB = Depends(get_current_school_admin)
-):
-    """
-    Update the profile of the currently authenticated school admin's school.
-    Only certain fields can be updated by school admins.
-    """
+) -> SchoolResponse:
+    """Get detailed information about a specific school"""
     try:
-        # Get current school
+        # Query with explicit admin join
         query = (
             select(School)
-            .where(School.id == current_user.school_id)
+            .where(School.registration_number == registration_number)
             .options(
+                joinedload(School.admin),  # This loads the admin relationship
                 joinedload(School.classes),
-                joinedload(School.sessions),
-                joinedload(School.classes).joinedload(Class.streams)
+                joinedload(School.sessions)
             )
         )
         
@@ -360,26 +236,104 @@ async def update_school_profile(
         if not school:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="School not found"
+                detail=f"School with registration number {registration_number} not found"
             )
+            
+        # Check authorization
+        if current_user.role != "super_admin" and current_user.school.registration_number != registration_number:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this school"
+            )
+            
+        # Convert to response model with explicit admin inclusion
+        response_data = SchoolResponse(
+            id=school.id,
+            name=school.name,
+            email=school.email,
+            phone=school.phone,
+            address=school.address,
+            school_type=school.school_type,
+            website=school.website,
+            registration_number=school.registration_number,
+            status=school.status,
+            county=school.county,
+            class_system=school.class_system,
+            class_range=school.class_range,
+            postal_code=school.postal_code,
+            extra_info=school.extra_info,
+            is_active=school.is_active,
+            created_at=school.created_at,
+            updated_at=school.updated_at,
+            admin=school.admin
+        )
         
-        # Update allowed fields
-        update_dict = update_data.model_dump(exclude_unset=True)
-        for field, value in update_dict.items():
-            if field not in ['registration_number', 'status', 'is_active']:  # Protected fields
-                setattr(school, field, value)
+        return response_data
         
-        school.updated_at = datetime.utcnow()
-        await db.commit()
-        await db.refresh(school)
-        
-        # Return updated profile using the same response model
-        return SchoolResponse.from_orm(school)
-        
-    except HTTPException:
-        raise
+    except ValidationError as e:
+        logger.error(f"Validation error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Data validation error: {str(e)}"
+        )
     except Exception as e:
-        await db.rollback()
+        logger.error(f"Error fetching school: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error while fetching school"
+        )
+ 
+        
+        
+@router.patch("/schools/profile", response_model=SchoolResponse)
+async def update_school_profile(
+    update_data: SchoolUpdateRequest,
+    service: SchoolService = Depends(get_school_service),
+    current_user: UserInDB = Depends(get_current_school_admin)
+) -> SchoolResponse:
+    """Update the profile of the currently authenticated school admin's school"""
+    try:
+        # Update school
+        updated_school = await service.update_school(
+            school_id=current_user.school_id,
+            update_data=update_data
+        )
+        
+        # Convert to response model
+        return SchoolResponse(
+            id=updated_school.id,
+            name=updated_school.name,
+            registration_number=updated_school.registration_number,
+            email=updated_school.email,
+            phone=updated_school.phone,
+            address=updated_school.address,
+            school_type=updated_school.school_type,
+            website=updated_school.website,
+            county=updated_school.county,
+            class_system=updated_school.class_system,
+            class_range=updated_school.class_range,
+            postal_code=updated_school.postal_code,
+            extra_info=updated_school.extra_info,
+            status=updated_school.status,
+            is_active=updated_school.is_active,
+            created_at=updated_school.created_at,
+            updated_at=updated_school.updated_at,
+            total_students=len([student for class_ in updated_school.classes 
+                              for stream in class_.streams 
+                              for student in stream.students]) if updated_school.classes else 0,
+            total_classes=len(updated_school.classes) if updated_school.classes else 0,
+            total_streams=sum(len(class_.streams) for class_ in updated_school.classes) if updated_school.classes else 0,
+            current_session=next((session for session in updated_school.sessions 
+                                if session.is_current), None) if updated_school.sessions else None
+        )
+        
+    except ResourceNotFoundException as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except SQLAlchemyError as e:
+        logger.error(f"Database error while updating school: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating school profile: {str(e)}"
