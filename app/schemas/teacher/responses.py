@@ -54,14 +54,20 @@ class TeacherUpdateResponse(BaseModel):
 class TeacherListResponse(BaseModel):
     """Schema for list of teachers response"""
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     name: str
     gender: Gender
     email: EmailStr
-    tsc_number: str
     phone: str
     date_of_joining: date
+    date_of_birth: date
+    photo:Optional[str] = None
+    id_number:int
+    tsc_number: str
+    address: Optional[str]
+    
+    created_at: datetime
+    updated_at: Optional[datetime]
 
 class TeacherDetailResponse(BaseModel):
     """Schema for detailed teacher response"""
