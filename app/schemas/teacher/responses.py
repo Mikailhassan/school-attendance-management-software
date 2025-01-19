@@ -27,8 +27,11 @@ class TeacherResponse(BaseModel):
     phone: str
     date_of_joining: date
     date_of_birth: date
+    photo:Optional[str] = None
+    id_number:int
     tsc_number: str
     address: Optional[str]
+    
     created_at: datetime
     updated_at: Optional[datetime]
 
