@@ -41,8 +41,10 @@ class TeacherRegistrationRequest(BaseModel):
     email: EmailStr
     phone: str
     date_of_joining: date
+    photo:Optional[str] = None
+    id_number:int
     date_of_birth: date
-    tsc_number: str
+    tsc_number: Optional[str] = None
     address: Optional[str] = None
     
     @validator('date_of_birth')
